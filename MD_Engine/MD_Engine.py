@@ -23,10 +23,10 @@ masses = []
 E_pot = 0
 K_E = 0
 E_total = 0
-No_Balls = 20
-dt = 0.0002
-Ideal_Dist = 9    #ideal distance from F=0
-K = 2.6           #spring constant (strngth of bond)
+No_Balls = 10
+dt = 0.00002
+Ideal_Dist = 5       #ideal distance from F=0
+K = 0.2             #spring constant (strngth of bond)
 
 # create pos
 for i in range(No_Balls):
@@ -53,7 +53,7 @@ for i in range(No_Balls):
 
 # create balls
 for i in range(No_Balls):
-    b = sphere(pos=positions[i], radius=0.1, color=color.red, make_trail=True, interval = 1, retain = 150)
+    b = sphere(pos=positions[i], radius=0.1, color=vector(0,0,0), make_trail=True, interval = 1, retain = 500)
     balls.append(b)
 
 def Calc_Diff():
@@ -77,33 +77,49 @@ def Calc_Diff():
     
     return E_pot
 
+for i in range(No_Balls):                                               # initial force calculation
+    forces[i] = vector(0,0,0)
+
+E_pot = Calc_Diff()
+
 step=0   
 # sim loop
 while True:
     rate(60)
-
-    for i in range(No_Balls):                                           #reset forces
-        forces[i] = vector(0,0,0)
-
-    E_pot = Calc_Diff()                                                 #calc forces
-        
-    for i in range(No_Balls):                                           #update velocities
-        A = forces[i]/masses[i]                                         #get accel from f=ma
-        velocities[i] = velocities[i] + A*dt                            #get velocity from dv/dt = v
     
-    for i in range(No_Balls):                                           #update positions
-        positions[i] = positions[i] + velocities[i]*dt
-        balls[i].pos = positions[i]
+    for _ in range(200):                                                    #Run physics faster
+        # first half-step velocity + position + colours 
+        for i in range(No_Balls):
+            A = forces[i] / masses[i]                                       #calculate acceleration
+            velocities[i] += 0.5 * A * dt                                   #half-step velocities
+            positions[i] += velocities[i] * dt                              # update positions
+            balls[i].pos = positions[i]
 
-    for i in range(No_Balls): 
-        K_E = K_E + (0.5*masses[i]*(dot(velocities[i], velocities[i])))#use dot product as v^2 to calc ke
+            speed = mag(velocities[i])                                      #calc speed
+            ColourPS = speed/40                                             #colour  %
+            ColourPS = min(ColourPS, 1)
+            balls[i].color = vector((ColourPS),0,(1-(ColourPS)))            #change ball colour
+            balls[i].trail_color = vector((ColourPS),0,(1-(ColourPS)))      #change trail colour
+
+    
+        for i in range(No_Balls):                                           #reset forces
+            forces[i] = vector(0,0,0)
+
+        E_pot = Calc_Diff()                                                 #calc forces
+
+        for i in range(No_Balls):                                           #update second half of velocities - this is after the "initial push" of the first velocity after calculating the forces
+            A_new = forces[i] / masses[i]
+            velocities[i] += 0.5 * A_new * dt
+
+        for i in range(No_Balls): 
+            K_E = K_E + (0.5*masses[i]*(dot(velocities[i], velocities[i])))#use dot product as v^2 to calc ke
 
 
-    E_total = K_E + E_pot
-    step += 1                                                         #print every so often
-    if step % 20 == 0:
-        print(E_total)
-    E_total = 0
-    K_E = 0
-    E_pot = 0
+        E_total = K_E + E_pot
+        step += 1                                                         #print every so often
+        if step % 100 == 0:
+            print(E_total)
+        E_total = 0
+        K_E = 0
+        E_pot = 0
     
