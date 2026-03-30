@@ -20,15 +20,15 @@ velocities = []
 forces = []
 balls = []
 masses = []
-bonds = [[0, 1, 1, 50], [1, 2, 1, 50]]
+bonds = [[0, 1, 1, 200], [1, 2, 1, 200], [1, 3, 1, 200], [4, 5, 1, 200], [5, 6, 1, 200], [6, 7, 1, 200]]
 bond_visuals = []
 E_pot = 0
 K_E = 0
 E_total = 0
-No_Balls = 3
-dt = 0.0001
-sigma = 1
-epsilon = 0.5
+No_Balls = 9
+dt = 0.001
+sigma = 0.8
+epsilon = 0.2
 PBC_Box_Length = 100
 
 # create pos
@@ -55,21 +55,10 @@ for p in positions:
     p.y -= (n_per_axis * spacing) / 2
     p.z -= (n_per_axis * spacing) / 2
 
-positions = [
-    vector(0,0,0),
-    vector(1,0,0),
-    vector(2,0,0)
-]
-
 # create empty velocities
 for i in range(No_Balls):
     vel = vector(0, 0, 0)
     velocities.append(vel)
-velocities = [
-    vector(0.01,0,0),
-    vector(0,0,0),
-    vector(-0.01,0,0)
-]
 
 # create empty forces
 for i in range(No_Balls):
@@ -107,25 +96,12 @@ for bond in bonds:
     )
     bond_visuals.append(c)
 
-def PBC_Box(i):
-    if positions[i].x > PBC_Box_Length/2:                               # checks if the x,y or z position are out of bounds
-        positions[i].x = positions[i].x - PBC_Box_Length                # adjust the new current position
-
-    if positions[i].x < -PBC_Box_Length/2:                              # repeat for the two ways the x axis can move, eg, y and z direction
-        positions[i].x = positions[i].x + PBC_Box_Length
-
-    if positions[i].y > PBC_Box_Length/2:                               # repeat for the y axis
-        positions[i].y = positions[i].y - PBC_Box_Length
-
-    if positions[i].y < -PBC_Box_Length/2:
-        positions[i].y = positions[i].y + PBC_Box_Length
-
-    if positions[i].z > PBC_Box_Length/2:                               # repeat for the z axis
-        positions[i].z = positions[i].z - PBC_Box_Length
-
-    if positions[i].z < -PBC_Box_Length/2:
-        positions[i].z = positions[i].z + PBC_Box_Length
-
+# checks if the two atoms are a bond, called a 1-2 exclusion in MD
+def Are_Bonded(i, j):                                                                   
+    for bond in bonds:
+        if (bond[0] == i and bond[1] == j) or (bond[0] == j and bond[1] == i):
+            return True
+    return False
 
 def PBC_Box_For_Vectors(r_vector):                                  
     if r_vector.x > PBC_Box_Length/2:
@@ -143,128 +119,149 @@ def PBC_Box_For_Vectors(r_vector):
     if r_vector.z < -PBC_Box_Length/2:
         r_vector.z = r_vector.z + PBC_Box_Length
 
-
-
-def Are_Bonded(i, j):                                                                   # checks if the two atoms are a bond, called a 1-2 exclusion in MD
-    for bond in bonds:
-        if (bond[0] == i and bond[1] == j) or (bond[0] == j and bond[1] == i):
-            return True
-    return False
-
 # caculate physics stuff
 def Calc_Physics():
-    E_pot = 0
-    for i in range(No_Balls):                                               # calculates distance between all pairs of points, avoiding common pairs
-        for j in range(i+1, No_Balls):           
-            
-            if Are_Bonded(i, j):                                            # skip bonded pairs
-                continue
-            
-            cutoff = 2.5 * sigma                           # cut off value to not calculate particles far away.
-            r_vector = positions[j] - positions[i]                          # calc resultant vector between two points
-            PBC_Box_For_Vectors(r_vector)                                   # Checks the copies around the real sim
-            dist = mag(r_vector)                                            # calc distance
-            
-            if dist > cutoff:                                               # if dist > than cutoff, skip that pair calc
-                continue
-            
-            direction = norm(r_vector)                                      # unit vector
-            #print("dist between: "+str(i)+"  and "+str(j)+": "+str(dist))
-            
-            # Calculate the lennard jones force
-            #F = Calc_LJ(dist, direction)                                    # Direction needed to apply direction to the scalar Force
-            #forces[i] = forces[i] + F                                       # store forces on particles
-            #forces[j] = forces[j] - F
+    E_pot = 0.0
 
-            # calculate total energy
-            U_shift = 4*epsilon*(((sigma/cutoff)**12)-((sigma/cutoff)**6))  # remove the small changes in pot e when you cut off particles from a small pot e to 0
-            E_pot = E_pot + 4*epsilon*(((sigma/dist)**12)-((sigma/dist)**6)) - U_shift # calc the potential energy of LJ forces
-
+    # bond forces
     for bond in bonds:
-        i = bond[0]
-        j = bond[1]
+        a = bond[0]
+        b = bond[1]
         r0 = bond[2]
         k = bond[3]
 
-        r_vector = positions[j] - positions[i]
-        PBC_Box_For_Vectors(r_vector)
-        dist = mag(r_vector)
+        r_vec = positions[b] - positions[a]
+        PBC_Box_For_Vectors(r_vec)
+        r = mag(r_vec)
 
-        direction = norm(r_vector)
+        if r == 0:
+            continue
 
-        F = -k * (dist - r0) * direction
+        r_hat = norm(r_vec)
 
-        forces[i] += F
-        forces[j] -= F
+        F = k * (r - r0) * r_hat
 
-        E_pot += 0.5 * k * (dist - r0)**2
-    
+        forces[a] += F
+        forces[b] -= F
+
+        E_pot += 0.5 * k * (r - r0)**2
+
+    # LJ for nonbonded pairs only
+    cutoff = 2.5 * sigma
+    U_shift = 4 * epsilon * ((sigma / cutoff)**12 - (sigma / cutoff)**6)
+
+    for i in range(No_Balls):
+        for j in range(i + 1, No_Balls):
+
+            if Are_Bonded(i, j):
+                continue
+
+            r_vec = positions[j] - positions[i]
+            PBC_Box_For_Vectors(r_vec)
+            r = mag(r_vec)
+
+            if r == 0 or r > cutoff:
+                continue
+
+            r_hat = norm(r_vec)
+
+            F = Calc_LJ(r, r_hat)
+
+            forces[i] += F
+            forces[j] -= F
+
+            E_pot += 4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) - U_shift
+
     return E_pot
 
-# Initialise forces before simulation starts
-for i in range(No_Balls):
-    forces[i] = vector(0,0,0)
 
+# initial forces before simulation starts
+for i in range(No_Balls):
+    forces[i] = vector(0, 0, 0)
 E_pot = Calc_Physics()
- 
-step=0   
-# sim loop
+
+step = 0
+relaxing = True
+relax_steps = 1000
 while True:
     rate(120)
-    for _ in range(10):                                                     # Run physics faster
-        # calc the next particle position with verlet equations
-        # first half-step velocity + position + colours 
-        
+
+    for _ in range(10):
+
+        # 1. half-step velocity update
         for i in range(No_Balls):
-            A = forces[i] / masses[i]                                       # calculate acceleration
-            velocities[i] += 0.5 * A * dt                                   # half-step velocities
+            velocities[i] += 0.5 * (forces[i] / masses[i]) * dt
+
+        # 2. position update
+        for i in range(No_Balls):
+            positions[i] += velocities[i] * dt
+
+        # 3. wrap positions back into box
+        for i in range(No_Balls):
+            if positions[i].x > PBC_Box_Length/2:
+                positions[i].x -= PBC_Box_Length
+            if positions[i].x < -PBC_Box_Length/2:
+                positions[i].x += PBC_Box_Length
+
+            if positions[i].y > PBC_Box_Length/2:
+                positions[i].y -= PBC_Box_Length
+            if positions[i].y < -PBC_Box_Length/2:
+                positions[i].y += PBC_Box_Length
+
+            if positions[i].z > PBC_Box_Length/2:
+                positions[i].z -= PBC_Box_Length
+            if positions[i].z < -PBC_Box_Length/2:
+                positions[i].z += PBC_Box_Length
+
+        # 4. reset forces
+        for i in range(No_Balls):
+            forces[i] = vector(0, 0, 0)
+
+        # 5. compute new forces
+        E_pot = Calc_Physics()
+
+        # 6. second half-step velocity update
+        for i in range(No_Balls):
+            velocities[i] += 0.5 * (forces[i] / masses[i]) * dt
+
+        # 7. dampen starting strains
+        if step < relax_steps/5:
             
+            damping = 0.99
+        elif step < relax_steps/2:
+            damping = 0.995
+        elif step < relax_steps:
+            damping = 0.999
+        else:
+            damping = 1.0
+            
+
         for i in range(No_Balls):
-            positions[i] += velocities[i] * dt                              # update positions: move
+            velocities[i] *= damping
 
-        
-        for i in range(No_Balls):
-            PBC_Box(i)                                                      # update copy boxes
-        
-        
-        for i in range(No_Balls):                                           # reset forces
-            forces[i] = vector(0,0,0)
 
-        E_pot = Calc_Physics()                                              # run the physics (Calc distances, Forces, and Potential energy) 
-
-        for i in range(No_Balls):                                           # update second half of velocities, required for verlet - this is after the "initial push" of the first velocity after calculating the forces
-            A_new = forces[i] / masses[i]
-            velocities[i] += 0.5 * A_new * dt
- 
             
         K_E = Calc_KE()
-        E_total = K_E + E_pot                                            
-        
-        step += 1                                                           # print every so often
+        E_total = K_E + E_pot
+        step += 1
 
         if step % 100 == 0:
-            # DEBUG: check bond length
+            print(f"KE: {K_E:.6f}  PE: {E_pot:.6f}  Total: {E_total:.6f}")
             for bond in bonds:
-                i = bond[0]
-                j = bond[1]
-                r = mag(positions[j] - positions[i])
-                print(f"Bond {i}-{j}: {r:.4f}")
-            
+                a = bond[0]
+                b = bond[1]
+                r_vec = positions[b] - positions[a]
+                PBC_Box_For_Vectors(r_vec)
+                print(f"Bond {a}-{b}: {mag(r_vec):.6f}")
 
-        
-        E_total = 0                                                         # reset energies after each timestep compleated
-        K_E = 0
-        E_pot = 0
+    # update graphics once per frame
+    for i in range(No_Balls):
+        balls[i].pos = positions[i]
+        speed = mag(velocities[i])
+        ColourPS = min(speed / 2.5, 1)
+        balls[i].color = vector(ColourPS, 0, 1 - ColourPS)
+        balls[i].trail_color = vector(ColourPS, 0, 1 - ColourPS)
 
-    for i in range(No_Balls):                                               # update balls
-            balls[i].pos = positions[i]
-            speed = mag(velocities[i])                                      # calc speed
-            ColourPS = speed/2.5                                            # colour %
-            ColourPS = min(ColourPS, 1)
-            balls[i].color = vector((ColourPS),0,(1-(ColourPS)))            # change ball colour
-            balls[i].trail_color = vector((ColourPS),0,(1-(ColourPS)))      # change trail colour
-
-            for idx, bond in enumerate(bonds):                              # update the bond sticks positions
-                bond_visuals[idx].pos = positions[bond[0]]
-                bond_visuals[idx].axis = positions[bond[1]] - positions[bond[0]]
-    
+    for idx, bond in enumerate(bonds):
+        bond_visuals[idx].pos = positions[bond[0]]
+        bond_visuals[idx].axis = positions[bond[1]] - positions[bond[0]]
