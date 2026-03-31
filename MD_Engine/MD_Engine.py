@@ -1,4 +1,4 @@
-from vpython import canvas, rate, sphere, vector,mag, norm,dot, cylinder
+from vpython import canvas, rate, sphere, vector,mag, norm,dot, cylinder, box
 import tkinter as tk
 import math
 import random
@@ -14,24 +14,77 @@ scene = canvas(title="Full Screen VPython",
                width=screen_width,
                height=screen_height)
 
-                  # atom variables
-positions = []
-velocities = []
-forces = []
+# atom class
+class Atom:
+    def __init__(self, mass, pos, vel, force, charge):
+        self.mass = mass
+        self.pos = pos
+        self.vel = vel
+        self.force = force
+        self.charge = charge
+
+# molecule class
+class Molecule:
+    def __init__(self, atom_indices):
+        self.atom_indices = atom_indices
+
+# bonds class
+class Bond:
+    def __init__(self, a1, a2, Ideal_Dist, K):
+        self.a1 = a1
+        self.a2 = a2
+        self.Ideal_Dist = Ideal_Dist
+        self.K = K
+
+atoms = []
 balls = []
-masses = []
-bonds = [[0, 1, 1, 200], [1, 2, 1, 200], [1, 3, 1, 200], [4, 5, 1, 200], [5, 6, 1, 200], [6, 7, 1, 200]]
+bonds = []
 bond_visuals = []
+
+# create test bonds
+bonds = [
+    Bond(0, 1, 1, 200),
+    Bond(1, 2, 1, 200),
+    Bond(1, 3, 1, 200),
+    Bond(4, 5, 1, 200),
+    Bond(5, 6, 1, 200),
+    Bond(6, 7, 1, 200)
+]
+
+#create test molecules
+molecules = [
+    Molecule([0,1,2,3]),
+    Molecule([4,5,6,7]),
+    Molecule([8]),
+    Molecule([9]),
+    Molecule([10]),
+    Molecule([11]),
+    Molecule([12]),
+    Molecule([13]),
+    Molecule([14])
+    ]
 
                 # simulation pararmeters
 E_pot = 0
 K_E = 0
 E_total = 0
-No_Balls = 9
-dt = 0.0005
+No_Balls = 15
+dt = 0.0008
 sigma = 0.8
 epsilon = 0.2
 PBC_Box_Length = 10
+
+
+# draws a faint box of the simulation area
+L = PBC_Box_Length
+
+box_visual = box(
+    pos=vector(0,0,0),
+    size=vector(L, L, L),
+    opacity=0.08,        # faint
+    color=vector(1,1,1)
+)
+
 
 # create pos
 
@@ -49,33 +102,26 @@ for i in range(n_per_axis):                 # create rough grid of balls
             x = i * spacing + random.uniform(-jitter_amount, jitter_amount)
             y = j * spacing + random.uniform(-jitter_amount, jitter_amount)
             z = k * spacing + random.uniform(-jitter_amount, jitter_amount)
-            positions.append(vector(x, y, z))
+            
+            atoms.append(Atom(
+                mass=1,                     # create empty masses
+                pos=vector(x, y, z),        # create positions
+                vel=vector(0, 0, 0),        # create empty velocities
+                force=vector(0,0,0),        # create empty forces
+                charge=0
+            ))
             count += 1
 
 # re centres balls from 0,0,0 centre
-for p in positions:
-    p.x -= (n_per_axis * spacing) / 2
-    p.y -= (n_per_axis * spacing) / 2
-    p.z -= (n_per_axis * spacing) / 2
+for a in atoms:
+    a.pos.x -= (n_per_axis * spacing) / 2
+    a.pos.y -= (n_per_axis * spacing) / 2
+    a.pos.z -= (n_per_axis * spacing) / 2
 
-# create empty velocities
-for i in range(No_Balls):
-    vel = vector(0, 0, 0)
-    velocities.append(vel)
-
-# create empty forces
-for i in range(No_Balls):
-    force = vector(0, 0, 0)
-    forces.append(force)
-
-# create empty masses
-for i in range(No_Balls):
-    mass = 1
-    masses.append(mass)
 
 # create balls
-for i in range(No_Balls):
-    b = sphere(pos=positions[i], radius=0.1, color=vector(0,0,0), make_trail=False)
+for a in atoms:
+    b = sphere(pos=a.pos, radius=0.1, color=vector(0,0,0), make_trail=False)
     balls.append(b)
 
 # Lennard Jones Force Equation (VDW's)
@@ -86,14 +132,14 @@ def Calc_LJ(dist, direction):
 def Calc_KE():
     K_E = 0
     for i in range(No_Balls): 
-        K_E = K_E + (0.5*masses[i]*(dot(velocities[i], velocities[i]))) # use dot product as v^2 to calc ke
+        K_E = K_E + (0.5*atoms[i].mass*(dot(atoms[i].vel, atoms[i].vel))) # use dot product as v^2 to calc ke
     return K_E
 
 # Draw lines between bonds
 for bond in bonds:
     c = cylinder(
-        pos=positions[bond[0]],
-        axis=positions[bond[1]] - positions[bond[0]],
+        pos=atoms[bond.a1].pos,
+        axis=atoms[bond.a2].pos - atoms[bond.a1].pos,
         radius=0.02,
         color=vector(1,1,1)
     )
@@ -103,27 +149,36 @@ for bond in bonds:
 # this is used to skip directly bonded atoms so their LJ forces dont get calculated
 def Are_Bonded(i, j):                                                                   
     for bond in bonds:
-        if (bond[0] == i and bond[1] == j) or (bond[0] == j and bond[1] == i):
+        if (bond.a1 == i and bond.a2 == j) or (bond.a1 == j and bond.a2 == i):
             return True
     return False
 
-# checks if a particle has reached the box boundery and needs warping
-def PBC_Box_For_Pos():
-    for i in range(No_Balls):                       
-            if positions[i].x > PBC_Box_Length/2:
-                positions[i].x -= PBC_Box_Length
-            if positions[i].x < -PBC_Box_Length/2:
-                positions[i].x += PBC_Box_Length
+# checks if a molecule has reached the box boundery and needs warping
+def Wrap_Molecules():
+    half = PBC_Box_Length / 2
 
-            if positions[i].y > PBC_Box_Length/2:
-                positions[i].y -= PBC_Box_Length
-            if positions[i].y < -PBC_Box_Length/2:
-                positions[i].y += PBC_Box_Length
+    for mol in molecules:
+        ref_pos = atoms[mol.atom_indices[0]].pos
+        shift = vector(0, 0, 0)
 
-            if positions[i].z > PBC_Box_Length/2:
-                positions[i].z -= PBC_Box_Length
-            if positions[i].z < -PBC_Box_Length/2:
-                positions[i].z += PBC_Box_Length
+        if ref_pos.x > half:
+            shift.x -= PBC_Box_Length
+        elif ref_pos.x < -half:
+            shift.x += PBC_Box_Length
+
+        if ref_pos.y > half:
+            shift.y -= PBC_Box_Length
+        elif ref_pos.y < -half:
+            shift.y += PBC_Box_Length
+
+        if ref_pos.z > half:
+            shift.z -= PBC_Box_Length
+        elif ref_pos.z < -half:
+            shift.z += PBC_Box_Length
+
+        if shift.x != 0 or shift.y != 0 or shift.z != 0:
+            for i in mol.atom_indices:
+                atoms[i].pos += shift
 
 # minimum image periodic correction - turns the vector into the nearest image vector
 def PBC_Box_For_Vectors(r_vector):                                  
@@ -148,13 +203,13 @@ def Calc_Physics():
 
     # bond forces
     for bond in bonds:
-        a = bond[0]
-        b = bond[1]
-        r0 = bond[2]
-        k = bond[3]
+        a = bond.a1
+        b = bond.a2
+        r0 = bond.Ideal_Dist
+        k = bond.K
 
         # compute the bond vector and bond lengths
-        r_vec = positions[b] - positions[a]
+        r_vec = atoms[b].pos - atoms[a].pos
         PBC_Box_For_Vectors(r_vec)
         r = mag(r_vec)
 
@@ -166,8 +221,8 @@ def Calc_Physics():
 
         F = k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector
 
-        forces[a] += F                          # apply Newtons third law - equal and opposite forces
-        forces[b] -= F
+        atoms[a].force += F                          # apply Newtons third law - equal and opposite forces
+        atoms[b].force -= F
 
         E_pot += 0.5 * k * (r - r0)**2          # calc the harmonic bond potential
 
@@ -181,7 +236,7 @@ def Calc_Physics():
             if Are_Bonded(i, j):                # skips bonded pairs
                 continue
 
-            r_vec = positions[j] - positions[i] # find pair distances ect
+            r_vec = atoms[j].pos - atoms[i].pos # find pair distances ect
             PBC_Box_For_Vectors(r_vec)
             r = mag(r_vec)
             
@@ -192,8 +247,8 @@ def Calc_Physics():
 
             F = Calc_LJ(r, r_hat)               # calculate LJ force
 
-            forces[i] += F                      # Newtons third law - apply to both atoms
-            forces[j] -= F
+            atoms[i].force += F                      # Newtons third law - apply to both atoms
+            atoms[j].force -= F
 
             E_pot += 4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) - U_shift # add the LJ potential energy on
 
@@ -202,7 +257,7 @@ def Calc_Physics():
 
 # initial forces before simulation starts - need valid forces before starting
 for i in range(No_Balls):
-    forces[i] = vector(0, 0, 0)
+    atoms[i].force = vector(0, 0, 0)
 E_pot = Calc_Physics()
 
 step = 0
@@ -215,25 +270,25 @@ while True:
 
         # 1. half-step velocity update
         for i in range(No_Balls):
-            velocities[i] += 0.5 * (forces[i] / masses[i]) * dt     # first half-step velocity update - uses current force to push velocity halfway forward
+            atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * dt     # first half-step velocity update - uses current force to push velocity halfway forward
 
         # 2. position update
         for i in range(No_Balls):
-            positions[i] += velocities[i] * dt                      # update pos
+            atoms[i].pos += atoms[i].vel * dt                      # update pos
 
         # 3. wrap positions back into box
-        PBC_Box_For_Pos()
+        Wrap_Molecules()
 
         # 4. reset forces
         for i in range(No_Balls):
-            forces[i] = vector(0, 0, 0)                             # clear old forces before computing new ones
+            atoms[i].force = vector(0, 0, 0)                             # clear old forces before computing new ones
 
         # 5. compute new forces
         E_pot = Calc_Physics()                                      # now get new forces at the new positions
 
         # 6. second half-step velocity update
         for i in range(No_Balls):
-            velocities[i] += 0.5 * (forces[i] / masses[i]) * dt     # compleate  the full velocity update using the new forces
+            atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * dt     # compleate  the full velocity update using the new forces
 
         # 7. dampen starting strains - ensures the system is calm so it doesent blow up
         if step < relax_steps/5:
@@ -248,7 +303,7 @@ while True:
             
 
         for i in range(No_Balls):
-            velocities[i] *= damping                                # dampens some of the velocity at each step when begining
+            atoms[i].vel *= damping                                # dampens some of the velocity at each step when begining
 
 
             
@@ -259,20 +314,20 @@ while True:
         if step % 100 == 0:                                         # debug printout stuff
             print(f"KE: {K_E:.6f}  PE: {E_pot:.6f}  Total: {E_total:.6f}")
             for bond in bonds:
-                a = bond[0]
-                b = bond[1]
-                r_vec = positions[b] - positions[a]
+                a = bond.a1
+                b = bond.a2
+                r_vec = atoms[b].pos - atoms[a].pos
                 PBC_Box_For_Vectors(r_vec)
                 print(f"Bond {a}-{b}: {mag(r_vec):.6f}")
 
     # update graphics once per frame
     for i in range(No_Balls):
-        balls[i].pos = positions[i]                                 # moves balls to current pos
-        speed = mag(velocities[i])                                  # ball colour stuff
+        balls[i].pos = atoms[i].pos                                 # moves balls to current pos
+        speed = mag(atoms[i].vel)                                  # ball colour stuff
         ColourPS = min(speed / 2.5, 1)
         balls[i].color = vector(ColourPS, 0, 1 - ColourPS)
         balls[i].trail_color = vector(ColourPS, 0, 1 - ColourPS)
 
     for idx, bond in enumerate(bonds):                              # update the bond visuals
-        bond_visuals[idx].pos = positions[bond[0]]
-        bond_visuals[idx].axis = positions[bond[1]] - positions[bond[0]]
+        bond_visuals[idx].pos = atoms[bond.a1].pos
+        bond_visuals[idx].axis = atoms[bond.a2].pos - atoms[bond.a1].pos
