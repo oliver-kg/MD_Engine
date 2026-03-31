@@ -74,7 +74,6 @@ sigma = 0.8
 epsilon = 0.2
 PBC_Box_Length = 10
 
-
 # draws a faint box of the simulation area
 L = PBC_Box_Length
 
@@ -85,16 +84,14 @@ box_visual = box(
     color=vector(1,1,1)
 )
 
-
 # create pos
-
 count = 0                                   # chooses a rough 3d grid size and spacing
 n_per_axis = math.ceil(No_Balls ** (1/3))
 spacing = 1 * sigma
 jitter_amount = 0.2 * sigma                 # adds randomness
 
-
-for i in range(n_per_axis):                 # create rough grid of balls
+# create rough grid of balls
+for i in range(n_per_axis):
     for j in range(n_per_axis):
         for k in range(n_per_axis):
             if count >= No_Balls:
@@ -117,7 +114,6 @@ for a in atoms:
     a.pos.x -= (n_per_axis * spacing) / 2
     a.pos.y -= (n_per_axis * spacing) / 2
     a.pos.z -= (n_per_axis * spacing) / 2
-
 
 # create balls
 for a in atoms:
@@ -237,7 +233,7 @@ def Calc_Physics():
                 continue
 
             r_vec = atoms[j].pos - atoms[i].pos # find pair distances ect
-            PBC_Box_For_Vectors(r_vec)
+            PBC_Box_For_Vectors(r_vec)          # update "copy vectors"
             r = mag(r_vec)
             
             if r == 0 or r > cutoff:            # skip invalid or too distant pairs
@@ -263,6 +259,7 @@ E_pot = Calc_Physics()
 step = 0
 relaxing = True 
 relax_steps = 1000
+E0 = None
 while True:
     rate(120)                                                       # capped at 120 render
 
@@ -284,7 +281,7 @@ while True:
             atoms[i].force = vector(0, 0, 0)                             # clear old forces before computing new ones
 
         # 5. compute new forces
-        E_pot = Calc_Physics()                                      # now get new forces at the new positions
+        E_pot = Calc_Physics()                                           # now get new forces at the new positions
 
         # 6. second half-step velocity update
         for i in range(No_Balls):
@@ -303,7 +300,7 @@ while True:
             
 
         for i in range(No_Balls):
-            atoms[i].vel *= damping                                # dampens some of the velocity at each step when begining
+            atoms[i].vel *= damping                                 # dampens some of the velocity at each step when begining
 
 
             
@@ -311,14 +308,23 @@ while True:
         E_total = K_E + E_pot
         step += 1
 
-        if step % 100 == 0:                                         # debug printout stuff
-            print(f"KE: {K_E:.6f}  PE: {E_pot:.6f}  Total: {E_total:.6f}")
-            for bond in bonds:
-                a = bond.a1
-                b = bond.a2
-                r_vec = atoms[b].pos - atoms[a].pos
-                PBC_Box_For_Vectors(r_vec)
-                print(f"Bond {a}-{b}: {mag(r_vec):.6f}")
+        
+        if step >= relax_steps and E0 is None:                      # start measuring any drift
+            E0 = E_total
+            print("Started energy drift measurement")
+        if step % 1000 == 0:
+            drift = E_total - E0
+            print(f"step {step} | E: {E_total:.6f} | drift: {drift:.6e}")
+        
+        
+        #if step % 100 == 0:                                         # debug printout stuff
+        #    print(f"KE: {K_E:.6f}  PE: {E_pot:.6f}  Total: {E_total:.6f}")
+        #    for bond in bonds:
+        #        a = bond.a1
+        #        b = bond.a2
+        #        r_vec = atoms[b].pos - atoms[a].pos
+        #        PBC_Box_For_Vectors(r_vec)
+        #        print(f"Bond {a}-{b}: {mag(r_vec):.6f}")
 
     # update graphics once per frame
     for i in range(No_Balls):
