@@ -77,15 +77,17 @@ class Bond_Angle:
     
 # torsion angle class
 class Torsion_Angle:
-    def __init__(self, a1, a2, a3, a4, n, psi, delta_deg, k):
+    def __init__(self, a1, a2, a3, a4, terms):
         self.a1 = a1
         self.a2 = a2
         self.a3 = a3
         self.a4 = a4
-        self.n = n
-        self.psi = psi
-        self.delta = math.radians(delta_deg)
-        self.k = k
+        self.psi = 0.0
+        self.terms = []
+        
+        # create structure for having more than one term for 3-term torsion equations
+        for k, n, delta_deg in terms:
+            self.terms.append((k, n, math.radians(delta_deg)))
 
 atoms = []
 balls = []
@@ -94,33 +96,39 @@ bond_angles = []
 torsion_angles = []
 bond_visuals = []
 
+
+def make_butane(start_index, offset, torsion_deg):
+    atoms = []
+
+
+
 atoms = [
     #butane
-    Atom(vector(0.0, 0.0, 0.0),   vector(0,0,0), vector(0,0,0), 0, "C"),   # 0
-    Atom(vector(1.0, 0.0, 0.0),   vector(0,0,0), vector(0,0,0), 0, "C"),   # 1
-    Atom(vector(2.0, 0.0, 0.0),   vector(0,0,0), vector(0,0,0), 0, "C"),   # 2
-    Atom(vector(3.0, 0.0, 0.0),   vector(0,0,0), vector(0,0,0), 0, "C"),   # 3
+    
+    Atom(vector(0.00, 0.00, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 0
+    Atom(vector(1.00, 0.00, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 1
+    Atom(vector(1.33, 0.94, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 2
+    Atom(vector(2.33, 0.94, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 3
 
-    Atom(vector(-0.3,  0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),  # 4
-    Atom(vector(-0.3, -0.45, 0.78), vector(0,0,0), vector(0,0,0), 0, "H"), # 5
-    Atom(vector(-0.3, -0.45,-0.78), vector(0,0,0), vector(0,0,0), 0, "H"), # 6
+    # hydrogens on C0
+    Atom(vector(-0.35,  0.90,  0.00), vector(0,0,0), vector(0,0,0), 0, "H"),  # 4
+    Atom(vector(-0.35, -0.45,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 5
+    Atom(vector(-0.35, -0.45, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 6
 
-    Atom(vector(1.0,  0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),   # 7
-    Atom(vector(1.0, -0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),   # 8
+    # hydrogens on C1
+    Atom(vector(1.35, -0.45,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 7
+    Atom(vector(1.35, -0.45, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 8
 
-    Atom(vector(2.0,  0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),   # 9
-    Atom(vector(2.0, -0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),   # 10
+    # hydrogens on C2
+    Atom(vector(0.98,  1.39,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 9
+    Atom(vector(0.98,  1.39, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 10
 
-    Atom(vector(3.3,  0.9,  0.0), vector(0,0,0), vector(0,0,0), 0, "H"),   # 11
-    Atom(vector(3.3, -0.45, 0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 12
-    Atom(vector(3.3, -0.45,-0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 13
-
+    # hydrogens on C3
+    Atom(vector(2.68,  1.84,  0.00), vector(0,0,0), vector(0,0,0), 0, "H"),   # 11
+    Atom(vector(2.68,  0.49,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 12
+    Atom(vector(2.68,  0.49, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 13
 
     ]
-
-for atom in atoms:
-    slight_change = random.uniform(1, 1.2)
-    atom.pos = atom.pos * slight_change
 
 # create test bonds
 bonds = [
@@ -144,6 +152,8 @@ bonds = [
     Bond(3, 13, 0.71, 350),
 
 ]
+
+
 
 #create test angles
 bond_angles = [
@@ -185,13 +195,14 @@ bond_angles = [
 
 torsion_angles = [
     #butane
-    Torsion_Angle(0, 1, 2, 3, 3, 0, 0, 0.2)
+    Torsion_Angle(0, 1, 2, 3, [(20, 1, 0), (0.00, 2, 0), (500, 3, 0)])
     ]
 
 #create test molecules
 molecules = [
     #butane
     Molecule([0,1,2,3,4,5,6,7,8,9,10,11,12,13]),
+
     ]
 
 # simulation pararmeters
@@ -199,7 +210,7 @@ e_pot = 0
 k_e = 0
 e_total = 0
 no_balls = len(atoms)
-dt = 0.0005
+dt = 0.00025
 sigma = 0.8
 epsilon = 0.2
 PBC_box_length = 10
@@ -213,6 +224,9 @@ box_visual = box(
     color=vector(1,1,1)
 )
 
+for a in atoms:
+    randomiser = random.uniform(1,1.2)
+    a.pos = a.pos*randomiser
 
 # create balls
 for a in atoms:
@@ -241,28 +255,51 @@ for bond in bonds:
     )
     bond_visuals.append(c)
 
-# checks if the two atoms are bonded, called a 1-2 exclusion in MD
-# this is used to skip directly bonded atoms so their LJ forces dont get calculated
-def Are_Bonded(i, j):                                                                   
+# builds the neibour list structure
+def build_neighbours():
+    neighbours = {i: set() for i in range(no_balls)}        # set makes sure no duplicates and fast to check
     for bond in bonds:
-        if (bond.a1 == i and bond.a2 == j) or (bond.a1 == j and bond.a2 == i):
-            return True
-    return False
+        neighbours[bond.a1].add(bond.a2)                    # bonding works both ways so adds the bond to the specific atom you are looking at at the moment
+        neighbours[bond.a2].add(bond.a1)
 
-# checks if three angles are bonded, called 1-3 exclusion, and skips those LJ forces being applied
-def Are_1_3(i, j):
-    for angle in bond_angles:
-        if (angle.first == i and angle.third == j) or (angle.first == j and angle.third == i):
-            return True
-    return False
+    return neighbours
 
-# checks if torsion angles are bonded, called 1-4 exclusion, and skips applying the LJ forces on them
-def Are_1_4(i, j):
-    for torsion in torsion_angles:
-        if (torsion.a1 == i and torsion.a4 == j) or (torsion.a1 == j and torsion.a4 == i):
-            return True
-    return False
-    return False
+# filters out all the bonds into 1-2, 1-3 or 1-4 bonds
+def build_exclusion_sets():
+    neighbours = build_neighbours()
+
+    bonded_12 = set()                                       # get ready to create set of bonds which are 1-2, 1-3 and 1-4 bonded
+    bonded_13 = set()
+    bonded_14 = set()
+
+    # for 1-2 pairs
+    for i in neighbours:                                    
+        for j in neighbours[i]:                             # if j is in the neighbour list at pos i, then there is a bond between i and j
+            bonded_12.add(tuple(sorted((i, j))))             # tuple and sorted means that each pair only gets added once, so no duplicates
+
+    # for 1-3 pairs
+    for i in neighbours:                                    # same thing with 1-2 bonds
+        for j in neighbours[i]:
+            for k in neighbours[j]:                         
+                if k != i:                                  # cant loop back to the same atom, so skips it
+                    bonded_13.add(tuple(sorted((i, k))))
+    
+    # for 1-4 pairs
+    for i in neighbours:
+        for j in neighbours[i]:
+            for k in neighbours[j]:
+                if k != i:
+                    for l in neighbours[k]:
+                        if l != j and l != i:
+                            pair = tuple(sorted((i, l)))
+
+                            if pair not in bonded_12 and pair not in bonded_13: # makes sure to skip over already bonded 1-2 and 1-3 pairs
+                                bonded_14.add(pair)
+
+    return bonded_12, bonded_13, bonded_14
+
+bonded_12, bonded_13, bonded_14 = build_exclusion_sets()    # builds the sets to be used
+
 
 # checks if a molecule has reached the box boundery and needs warping
 def Wrap_Molecules():
@@ -308,7 +345,7 @@ def PBC_Box_For_Vectors(r_vector):
     if r_vector.z < -PBC_box_length/2:
         r_vector.z = r_vector.z + PBC_box_length
 
-
+# simple camera movement via key press
 def update_camera(dt):
     speed = 50 
 
@@ -413,10 +450,7 @@ def Calc_Physics():
         a2 = angle.a2
         a3 = angle.a3
         a4 = angle.a4
-        n = angle.n                             # number of stable positions per turn
-        psi = angle.psi                         # the angle of the bond
-        delta = angle.delta                     # offset of graph
-        k = angle.k                             # how strong the torsion is
+
 
         b1 = atoms[a2].pos - atoms[a1].pos      # directions of the three bonds
         b2 = atoms[a3].pos - atoms[a2].pos
@@ -440,7 +474,14 @@ def Calc_Physics():
         psi = math.atan2(y, x)                  # caluclate current psi angle
         angle.psi = psi 
 
-        dV_dpsi = -k*n*math.sin(n*psi-delta)            # how strongly the torsion wants to rotate
+        torsion_energy = 0
+        dV_dpsi = 0
+
+        for k, n, delta in angle.terms:                             # repeats for each term, updating the cos graph
+            torsion_energy += k * (1 + math.cos(n * psi - delta))   # calculate the potential energy
+            dV_dpsi += k * n * math.sin(n * psi - delta)           # how strongly the torsion wants to rotate
+        
+            
         fa_pref = -dV_dpsi * (b2_mag / n1_sq)           # calculates the geometric scallings of the force
         fd_pref =  dV_dpsi * (b2_mag / n2_sq)
 
@@ -459,7 +500,7 @@ def Calc_Physics():
         atoms[a4].force += f_d                         # apply force to atom d
 
         
-        e_pot += k*(1+math.cos((n*psi)-delta))  # calculate the potential energy
+        e_pot += torsion_energy  # calculate the potential energy
         
 
     cutoff = 2.5 * sigma                        # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
@@ -469,10 +510,15 @@ def Calc_Physics():
         for j in range(i + 1, no_balls):
 
             scale = 1.0
-            if Are_Bonded(i, j) or Are_1_3(i, j):   # completely skips the 1-2, 1-3 bonds/angles from LJ
+            pair = tuple(sorted((i, j)))
+
+            if pair in bonded_12 or pair in bonded_13:  # compleately skips 1-2 and 1-3 bonds
                 continue
-            if Are_1_4(i, j):                       # slightly dampens the force if are torsion bonds
+            
+            if pair in bonded_14:                       # dapens 1-4 LJ forces
                 scale = 0.5
+            else:
+                scale = 1
 
             r_vec = atoms[j].pos - atoms[i].pos # find pair distances ect
             PBC_Box_For_Vectors(r_vec)          # update "copy vectors"
@@ -487,7 +533,7 @@ def Calc_Physics():
             atoms[i].force += F                      # Newtons third law - apply to both atoms
             atoms[j].force -= F
 
-            e_pot += scale * 4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) - U_shift # add the LJ potential energy on
+            e_pot += scale * (4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) - U_shift) # add the LJ potential energy on
 
     return e_pot                                
 
@@ -500,7 +546,7 @@ e_pot = Calc_Physics()
 
 step = 0
 relaxing = True 
-relax_steps = 4000
+relax_steps = 10000
 E0 = None
 while True:
     rate(120)                                                       # capped at 120 render
@@ -576,5 +622,3 @@ while True:
     for idx, bond in enumerate(bonds):                              # update the bond visuals
         bond_visuals[idx].pos = atoms[bond.a1].pos
         bond_visuals[idx].axis = atoms[bond.a2].pos - atoms[bond.a1].pos
-
-
