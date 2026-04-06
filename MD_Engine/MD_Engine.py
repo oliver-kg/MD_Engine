@@ -1,7 +1,8 @@
 from vpython import canvas, rate, sphere, vector,mag, norm,dot, cross, cylinder, box
 import tkinter as tk
 import math
-import random
+
+import read_molecules
 
 # Get screen dimensions
 root = tk.Tk()
@@ -32,11 +33,11 @@ scene.bind("keyup", keyup)
 
 # preset dictionary of different elements
 ELEMENTS = {
-    "H": {"mass": 1.0,  "radius": 0.10, "color": vector(1, 1, 1)},
-    "C": {"mass": 12.0, "radius": 0.20, "color": vector(0.2, 0.2, 0.2)},
-    "O": {"mass": 16.0, "radius": 0.15, "color": vector(1, 0, 0)},
-    "N": {"mass": 14.0, "radius": 0.22, "color": vector(0, 0, 1)},
-    "S": {"mass": 32.0, "radius": 0.30, "color": vector(1, 1, 0)},
+    "H": {"mass": 1.0080,  "radius": 0.03, "color": vector(1, 1, 1)},
+    "C": {"mass": 12.0110, "radius": 0.05, "color": vector(0.2, 0.2, 0.2)},
+    "O": {"mass": 15.9994, "radius": 0.04, "color": vector(1, 0, 0)},
+    "N": {"mass": 14.0067, "radius": 0.047, "color": vector(0, 0, 1)},
+    "S": {"mass": 32.0, "radius": 0.15, "color": vector(1, 1, 0)},
 }
 
 # atom class
@@ -97,111 +98,28 @@ torsion_angles = []
 bond_visuals = []
 
 
-def make_butane(start_index, offset, torsion_deg):
-    atoms = []
 
 
 
-atoms = [
-    #butane
-    
-    Atom(vector(0.00, 0.00, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 0
-    Atom(vector(1.00, 0.00, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 1
-    Atom(vector(1.33, 0.94, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 2
-    Atom(vector(2.33, 0.94, 0.00), vector(0,0,0), vector(0,0,0), 0, "C"),   # 3
+# create atoms from the read_molecules python file
+for ind in read_molecules.atom_index:
+    atoms.append(Atom(read_molecules.atom_pos[ind], vector(0,0,0), vector(0.1,0.1,0.1), read_molecules.atom_charge[ind], read_molecules.atom_type[ind]))
 
-    # hydrogens on C0
-    Atom(vector(-0.35,  0.90,  0.00), vector(0,0,0), vector(0,0,0), 0, "H"),  # 4
-    Atom(vector(-0.35, -0.45,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 5
-    Atom(vector(-0.35, -0.45, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),  # 6
+# create bonds from the read_molecules python file    
+for ind in range(len(read_molecules.a_a)):    
+    bonds.append(Bond(read_molecules.a_a[ind], read_molecules.a_b[ind], read_molecules.r_0[ind], read_molecules.k_engine[ind]))
 
-    # hydrogens on C1
-    Atom(vector(1.35, -0.45,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 7
-    Atom(vector(1.35, -0.45, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 8
+# create angles from the read_molecules python file
+for ind in range(len(read_molecules.a_i)):
+    bond_angles.append(Bond_Angle(read_molecules.b_angle[ind], 0, read_molecules.a_i[ind], read_molecules.a_j[ind], read_molecules.a_k[ind], read_molecules.k_ang[ind]))
 
-    # hydrogens on C2
-    Atom(vector(0.98,  1.39,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 9
-    Atom(vector(0.98,  1.39, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 10
-
-    # hydrogens on C3
-    Atom(vector(2.68,  1.84,  0.00), vector(0,0,0), vector(0,0,0), 0, "H"),   # 11
-    Atom(vector(2.68,  0.49,  0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 12
-    Atom(vector(2.68,  0.49, -0.78), vector(0,0,0), vector(0,0,0), 0, "H"),   # 13
-
-    ]
-
-# create test bonds
-bonds = [
-    #butane
-    Bond(0, 1, 1.0, 300),
-    Bond(1, 2, 1.0, 300),
-    Bond(2, 3, 1.0, 300),
-
-    Bond(0, 4, 0.71, 350),
-    Bond(0, 5, 0.71, 350),
-    Bond(0, 6, 0.71, 350),
-
-    Bond(1, 7, 0.71, 350),
-    Bond(1, 8, 0.71, 350),
-
-    Bond(2, 9, 0.71, 350),
-    Bond(2, 10, 0.71, 350),
-
-    Bond(3, 11, 0.71, 350),
-    Bond(3, 12, 0.71, 350),
-    Bond(3, 13, 0.71, 350),
-
-]
-
-
-
-#create test angles
-bond_angles = [
-    #butane
-
-    # around C0
-    Bond_Angle(109.5, 109.5, 4, 0, 5, 60),
-    Bond_Angle(109.5, 109.5, 4, 0, 6, 60),
-    Bond_Angle(109.5, 109.5, 5, 0, 6, 60),
-    Bond_Angle(109.5, 109.5, 1, 0, 4, 60),
-    Bond_Angle(109.5, 109.5, 1, 0, 5, 60),
-    Bond_Angle(109.5, 109.5, 1, 0, 6, 60),
-
-    # around C1
-    Bond_Angle(109.5, 109.5, 0, 1, 2, 60),
-    Bond_Angle(109.5, 109.5, 0, 1, 7, 60),
-    Bond_Angle(109.5, 109.5, 0, 1, 8, 60),
-    Bond_Angle(109.5, 109.5, 2, 1, 7, 60),
-    Bond_Angle(109.5, 109.5, 2, 1, 8, 60),
-    Bond_Angle(109.5, 109.5, 7, 1, 8, 60),
-
-    # around C2
-    Bond_Angle(109.5, 109.5, 1, 2, 3, 60),
-    Bond_Angle(109.5, 109.5, 1, 2, 9, 60),
-    Bond_Angle(109.5, 109.5, 1, 2, 10, 60),
-    Bond_Angle(109.5, 109.5, 3, 2, 9, 60),
-    Bond_Angle(109.5, 109.5, 3, 2, 10, 60),
-    Bond_Angle(109.5, 109.5, 9, 2, 10, 60),
-
-    # around C3
-    Bond_Angle(109.5, 109.5, 2, 3, 11, 60),
-    Bond_Angle(109.5, 109.5, 2, 3, 12, 60),
-    Bond_Angle(109.5, 109.5, 2, 3, 13, 60),
-    Bond_Angle(109.5, 109.5, 11, 3, 12, 60),
-    Bond_Angle(109.5, 109.5, 11, 3, 13, 60),
-    Bond_Angle(109.5, 109.5, 12, 3, 13, 60),
-
-    ]
-
-torsion_angles = [
-    #butane
-    Torsion_Angle(0, 1, 2, 3, [(20, 1, 0), (0.00, 2, 0), (500, 3, 0)])
-    ]
+# create dihedrals from the read_molecules python file
+for ind in range(len(read_molecules.d_i)):
+    torsion_angles.append(Torsion_Angle(read_molecules.d_i[ind], read_molecules.d_j[ind], read_molecules.d_k[ind], read_molecules.d_l[ind], [(read_molecules.k_dih[ind], read_molecules.n[ind], read_molecules.ph[ind])]))
 
 #create test molecules
 molecules = [
-    #butane
-    Molecule([0,1,2,3,4,5,6,7,8,9,10,11,12,13]),
+    
 
     ]
 
@@ -210,9 +128,9 @@ e_pot = 0
 k_e = 0
 e_total = 0
 no_balls = len(atoms)
-dt = 0.00025
-sigma = 0.8
-epsilon = 0.2
+dt = 0.0004
+sigma = 0.3
+epsilon = 0.02
 PBC_box_length = 10
 
 # draws a faint box of the simulation area
@@ -224,9 +142,6 @@ box_visual = box(
     color=vector(1,1,1)
 )
 
-for a in atoms:
-    randomiser = random.uniform(1,1.2)
-    a.pos = a.pos*randomiser
 
 # create balls
 for a in atoms:
@@ -250,7 +165,7 @@ for bond in bonds:
     c = cylinder(
         pos=atoms[bond.a1].pos,
         axis=atoms[bond.a2].pos - atoms[bond.a1].pos,
-        radius=0.02,
+        radius=0.01,
         color=vector(1,1,1)
     )
     bond_visuals.append(c)
@@ -388,6 +303,9 @@ def Calc_Physics():
 
         BA = atoms[atomA].pos - atoms[atomB].pos                                # find vector of B to A
         BC = atoms[atomC].pos - atoms[atomB].pos                                # find vector of B to C
+
+        PBC_Box_For_Vectors(BA)                                                 # update the coppy vectors
+        PBC_Box_For_Vectors(BC)
         
         r_BA = mag(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
         r_BC = mag(BC)
@@ -437,12 +355,12 @@ def Calc_Physics():
 
         r_hat = norm(r_vec)                     # bond direction
 
-        F = k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector
+        F = 2 * k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
 
         atoms[a].force += F                          # apply Newtons third law - equal and opposite forces
         atoms[b].force -= F
 
-        e_pot += 0.5 * k * (r - r0)**2          # calc the harmonic bond potential
+        e_pot += k * (r - r0)**2                # calc the harmonic bond potential in function 2 type bond
 
     # torsion angles
     for angle in torsion_angles:
@@ -455,6 +373,10 @@ def Calc_Physics():
         b1 = atoms[a2].pos - atoms[a1].pos      # directions of the three bonds
         b2 = atoms[a3].pos - atoms[a2].pos
         b3 = atoms[a4].pos - atoms[a3].pos
+
+        PBC_Box_For_Vectors(b1)                        # update the vectors of coppies
+        PBC_Box_For_Vectors(b2)
+        PBC_Box_For_Vectors(b3)
 
         n1 = cross(b1, b2)                      # normal to plane ABC
         n2 = cross(b2, b3)                      # normal to plane BCD
@@ -476,14 +398,14 @@ def Calc_Physics():
 
         torsion_energy = 0
         dV_dpsi = 0
-
+        
         for k, n, delta in angle.terms:                             # repeats for each term, updating the cos graph
             torsion_energy += k * (1 + math.cos(n * psi - delta))   # calculate the potential energy
-            dV_dpsi += k * n * math.sin(n * psi - delta)           # how strongly the torsion wants to rotate
+            dV_dpsi -= k * n * math.sin(n * psi - delta)            # how strongly the torsion wants to rotate
         
             
-        fa_pref = -dV_dpsi * (b2_mag / n1_sq)           # calculates the geometric scallings of the force
-        fd_pref =  dV_dpsi * (b2_mag / n2_sq)
+        fa_pref = dV_dpsi * (b2_mag / n1_sq)           # calculates the geometric scallings of the force
+        fd_pref = -dV_dpsi * (b2_mag / n2_sq)
 
         f_a = fa_pref * n1                              # aligning the forces with the direction to the plane
         f_d = fd_pref * n2
@@ -491,14 +413,13 @@ def Calc_Physics():
         c1 = dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
         c2 = dot(b3, b2) / b2_sq
 
-        f_b = -f_a + c1 * f_a - c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
-        f_c = -f_d - c1 * f_a + c2 * f_d
+        f_b = -(1.0 + c1) * f_a + c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
+        f_c = f_c = -(f_a + f_b + f_d)
 
         atoms[a1].force += f_a                         # apply force to atom a
         atoms[a2].force += f_b                         # apply force to atom b
         atoms[a3].force += f_c                         # apply force to atom c
         atoms[a4].force += f_d                         # apply force to atom d
-
         
         e_pot += torsion_energy  # calculate the potential energy
         
@@ -546,7 +467,7 @@ e_pot = Calc_Physics()
 
 step = 0
 relaxing = True 
-relax_steps = 10000
+relax_steps = 2000
 E0 = None
 while True:
     rate(120)                                                       # capped at 120 render
@@ -596,6 +517,7 @@ while True:
 
         if step % 100 == 0:                                         # debug printout stuff
             print(f"KE: {k_e:.6f}  PE: {e_pot:.6f}  Total: {e_total:.6f}")
+            '''
             for bond in bonds:
                 a = bond.a1
                 b = bond.a2
@@ -605,13 +527,11 @@ while True:
                 
             for angle in bond_angles:
                 print(f"Angle: {math.degrees(angle.theta)}")
-
+            '''
             for angle in torsion_angles:
                 print(f"Angle: {math.degrees(angle.psi)}")
-
-            for angle in torsion_angles:
-                if (angle.a1, angle.a2, angle.a3, angle.a4) == (0, 1, 2, 3):
-                    print("CCCC torsion:", math.degrees(angle.psi))
+            
+           
 
 
         
