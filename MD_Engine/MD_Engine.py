@@ -1,4 +1,4 @@
-from vpython import canvas, rate, sphere, vector,mag, norm,dot, cross, cylinder, box
+from vpython import *                   # imports all I use
 import tkinter as tk
 import math
 
@@ -15,6 +15,9 @@ scene = canvas(title="Full Screen VPython",
                width=screen_width,
                height=screen_height)
 
+scene.lights = []      # Remove all default lights
+scene.ambient = color.gray(0.22)   # Soft fill light
+
 # keys for camera movement
 keys = {"w": False, "a": False, "s": False, "d": False, "q": False, "e": False}
 
@@ -30,6 +33,7 @@ def keyup(evt):
 
 scene.bind("keydown", keydown)
 scene.bind("keyup", keyup)
+
 
 # preset dictionary of different elements
 ELEMENTS = {
@@ -160,6 +164,10 @@ def Calc_KE():
         k_e = k_e + (0.5*atoms[i].mass*(dot(atoms[i].vel, atoms[i].vel))) # use dot product as v^2 to calc ke
     return k_e
 
+# calc Coulombs
+def Calc_Coulombs(q1, q2, r, direction, k):
+    return -(k*((q1*q2)/(r**2))) * direction
+
 # Draw lines between bonds
 for bond in bonds:
     c = cylinder(
@@ -193,7 +201,7 @@ def build_exclusion_sets():
             bonded_12.add(tuple(sorted((i, j))))             # tuple and sorted means that each pair only gets added once, so no duplicates
 
     # for 1-3 pairs
-    for i in neighbours:                                    # same thing with 1-2 bonds
+    for i in neighbours:                                    # same thing as 1-2 bonds
         for j in neighbours[i]:
             for k in neighbours[j]:                         
                 if k != i:                                  # cant loop back to the same atom, so skips it
@@ -262,7 +270,7 @@ def PBC_Box_For_Vectors(r_vector):
 
 # simple camera movement via key press
 def update_camera(dt):
-    speed = 50 
+    speed = 20 
 
     forward = norm(scene.forward)
     right = norm(cross(forward, scene.up))
@@ -290,7 +298,7 @@ def update_camera(dt):
 
 # caculate physics stuff - the heart <3
 def Calc_Physics():
-    e_pot = 0.0
+    e_pot_Total = 0.0
     
     # bond angles
     for angle in bond_angles:
@@ -335,7 +343,7 @@ def Calc_Physics():
         atoms[atomB].force += f_b
         atoms[atomC].force += f_c
 
-        e_pot += 0.5 * k * (theta - ideal_ang)**2                # update the potential energy change from the angle
+        e_pot_Total += 0.5 * k * (theta - ideal_ang)**2                # update the potential energy change from the angle
         
     # bond forces
     for bond in bonds:
@@ -360,7 +368,7 @@ def Calc_Physics():
         atoms[a].force += F                          # apply Newtons third law - equal and opposite forces
         atoms[b].force -= F
 
-        e_pot += k * (r - r0)**2                # calc the harmonic bond potential in function 2 type bond
+        e_pot_Total += k * (r - r0)**2                # calc the harmonic bond potential in function 2 type bond
 
     # torsion angles
     for angle in torsion_angles:
@@ -374,7 +382,7 @@ def Calc_Physics():
         b2 = atoms[a3].pos - atoms[a2].pos
         b3 = atoms[a4].pos - atoms[a3].pos
 
-        PBC_Box_For_Vectors(b1)                        # update the vectors of coppies
+        PBC_Box_For_Vectors(b1)                 # update the vectors of coppies
         PBC_Box_For_Vectors(b2)
         PBC_Box_For_Vectors(b3)
 
@@ -421,11 +429,12 @@ def Calc_Physics():
         atoms[a3].force += f_c                         # apply force to atom c
         atoms[a4].force += f_d                         # apply force to atom d
         
-        e_pot += torsion_energy  # calculate the potential energy
+        e_pot_Total += torsion_energy  # calculate the potential energy
         
+    
+    #LJ forces and Coulombs (non bonded loop)
 
-    cutoff = 2.5 * sigma                        # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
-    U_shift = 4 * epsilon * ((sigma / cutoff)**12 - (sigma / cutoff)**6) # used so the LJ potential smoothly becomes 0 instead of cutting off
+    K_Const = 138.935456
 
     for i in range(no_balls):                   # loop over each unique atom pair once
         for j in range(i + 1, no_balls):
@@ -436,28 +445,35 @@ def Calc_Physics():
             if pair in bonded_12 or pair in bonded_13:  # compleately skips 1-2 and 1-3 bonds
                 continue
             
-            if pair in bonded_14:                       # dapens 1-4 LJ forces
+            if pair in bonded_14:                   # dapens 1-4 LJ forces
                 scale = 0.5
             else:
                 scale = 1
 
-            r_vec = atoms[j].pos - atoms[i].pos # find pair distances ect
-            PBC_Box_For_Vectors(r_vec)          # update "copy vectors"
+            r_vec = atoms[j].pos - atoms[i].pos     # find pair distances ect
+            PBC_Box_For_Vectors(r_vec)              # update "copy vectors"
             r = mag(r_vec)
             
-            if r == 0 or r > cutoff:            # skip invalid or too distant pairs
+            if r == 0:             # skip invalid
                 continue
 
             r_hat = norm(r_vec)
 
-            F = scale * Calc_LJ(r, r_hat)               # calculate LJ force
-            atoms[i].force += F                      # Newtons third law - apply to both atoms
-            atoms[j].force -= F
+            F_LJ = Calc_LJ(r, r_hat)                # calculate LJ force
+            
+            q1 = float(atoms[i].charge)                    # get atom charges
+            q2 = float(atoms[j].charge)
+            
+            F_C = Calc_Coulombs(q1, q2, r, r_hat, K_Const)
 
-            e_pot += scale * (4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) - U_shift) # add the LJ potential energy on
+            Total_Force = (scale*F_LJ) + (scale*F_C)
+            atoms[i].force += Total_Force                      # Newtons third law - apply to both atoms
+            atoms[j].force -= Total_Force
 
-    return e_pot                                
+            e_pot_Total += scale * 4 * epsilon * ((sigma / r)**12 - (sigma / r)**6) # add the LJ potential energy on
+            e_pot_Total += scale * (K_Const * ((q1*q2)/ r))
 
+    return e_pot_Total                                
 
 
 # initial forces before simulation starts - need valid forces before starting
@@ -469,12 +485,33 @@ step = 0
 relaxing = True 
 relax_steps = 2000
 E0 = None
+# Main light (camera light)
+cam_light = local_light(
+    pos=scene.camera.pos - scene.camera.axis.norm()*4,
+    color=color.gray(0.65)
+)
+
+distant_light(
+    direction=vector(-1,-1,-1),
+    color=color.gray(0.35)
+)
+
+distant_light(
+    direction=vector(1,0.5,1),
+    color=color.gray(0.15)
+)
+
+# running simulation
 while True:
     rate(120)                                                       # capped at 120 render
     update_camera(dt)
+    
+    # lighting position for camera
+    cam_light.pos = scene.camera.pos - scene.camera.axis.norm()*3
+
     for _ in range(10):                                             # run physics faster
         
-        
+        # Verlet integration method:
         # 1. half-step velocity update
         for i in range(no_balls):
             atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * dt     # first half-step velocity update - uses current force to push velocity halfway forward
@@ -497,7 +534,7 @@ while True:
         for i in range(no_balls):
             atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * dt     # compleate  the full velocity update using the new forces
 
-        # 7. dampen starting strains - ensures the system is calm so it doesent blow up
+        # 7. dampen starting strains - ensures the system is calm so it doesent blow up to begin with
         if step < relax_steps/5:
             damping = 0.99
         elif step < relax_steps/2:
@@ -505,7 +542,7 @@ while True:
         elif step < relax_steps:
             damping = 0.999
         else:
-            damping = 1                                           # no more dampening
+            damping = 1                                             # no more dampening
             
         for i in range(no_balls):
             atoms[i].vel *= damping                                 # dampens some of the velocity at each step when begining
@@ -529,12 +566,9 @@ while True:
                 print(f"Angle: {math.degrees(angle.theta)}")
             '''
             for angle in torsion_angles:
-                print(f"Angle: {math.degrees(angle.psi)}")
+                print(f"Real Angle: {math.degrees(angle.psi)} ")
             
            
-
-
-        
     # update graphics once per frame
     for i in range(no_balls):
         balls[i].pos = atoms[i].pos                                 # moves balls to current pos
