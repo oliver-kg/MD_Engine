@@ -32,7 +32,7 @@ n = []
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/C10H23NO6/C10H23NO6_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt
-f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_PDB.txt", "r")             # opens the pos file of the molecule
+f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt", "r")             # opens the pos file of the molecule
 
 for i in f:
     if "CONECT" in i:
@@ -54,15 +54,15 @@ f.close()
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/C10H23NO6/C10H23NO6_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt
-f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_ITP.txt")
+f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt")
 
 
 #length_scale = 0.1530                                                                   # scale down the real values to make typical c-c as 1.0 engine units
 #k_scale = 40000
 #k_ang_scale = 4
 length_scale = 1                                                                   # scale down the real values to make typical c-c as 1.0 engine units
-k_scale = 4000
-k_ang_scale = 1
+k_scale = 50
+k_ang_scale = 10
 
 reading_atoms = False
 reading_bonds = False
