@@ -23,12 +23,14 @@ class Atom:
         props = ELEMENTS[element]
         self.mass = props["mass"]
         self.pos = pos
+        self.last_neighbour_reference = vector(0,0,0)
         self.vel = vel
         self.force = force
         self.charge = charge
         self.radius = props["radius"]
         self.element = element
         self.base_colour = props["color"]
+        self.neighbours = []
 
 # molecule class
 class Molecule:
@@ -76,7 +78,7 @@ torsion_angles = []
 bond_visuals = []
 
 molecules = [
-     Molecule([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14])
+     Molecule([0])
     ]
 
 # simulation pararmeters
@@ -87,8 +89,11 @@ TIME_STEP = 0.0004
 LJ_SIGMA = 0.3
 LJ_EPSILON = 0.02
 LJ_CUTOFF = 2.5 * LJ_SIGMA                        # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
+SKIN_CUTOFF = 0.5
+NEIGHBOUR_CUTOFF = SKIN_CUTOFF+LJ_CUTOFF
 COULOMB_CONSTANT = 138.935456
-PBC_BOX_LENGTH = 10
+PBC_BOX_LENGTH = 20
+CELL_SIZE = NEIGHBOUR_CUTOFF
 steps = []
 avg_sys_energy_values = []
 
@@ -98,6 +103,8 @@ time_taken_bonds = 0
 time_taken_bond_angles = 0
 time_taken_torsions = 0
 time_taken_non_bonded = 0
+time_taken_LJ = 0
+time_taken_coulombs = 0
 time_taken_graphics = 0
 time_taken_total = 0
 time_other = 0
@@ -106,6 +113,7 @@ time_other = 0
 
 # Create interactive graph of the system energy of the engine
 
+'''
 plt.ion()  # Interactive mode
 fig, ax = plt.subplots()
 line, = ax.plot([], [], lw=2)
@@ -113,7 +121,7 @@ ax.set_xlabel("Timestep")
 ax.set_ylabel("Average System Energy")
 ax.set_title("Average System Energy (100-step average)")
 ax.grid(True)
-
+'''
 # Get screen dimensions
 root = tk.Tk()
 screen_width = root.winfo_screenwidth()
@@ -194,6 +202,9 @@ def build_molecule_from_file():
 
 #create test molecules
 build_molecule_from_file()
+atoms.append(Atom(vector(-0.51,0.21,0.81), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
+atoms.append(Atom(vector(-0.31,0.41,0.61), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
+atoms.append(Atom(vector(-0.81,0.31,0.41), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
 # create number of atoms after all atoms have been made
 no_balls = len(atoms)
 
@@ -308,6 +319,8 @@ def PBC_box_for_vectors(r_vector):
     if r_vector.z < -PBC_BOX_LENGTH/2:
         r_vector.z = r_vector.z + PBC_BOX_LENGTH
 
+    return r_vector
+
 # simple camera movement via key press
 def update_camera(dt):
     speed = 20 
@@ -350,6 +363,68 @@ def LJ_calculations(r, r_hat, scale, LJ_energy_shift, i, j):
     global pot_e_total
     pot_e_total += scale * (4 * LJ_EPSILON * ((LJ_SIGMA / r)**12 - (LJ_SIGMA / r)**6) - LJ_energy_shift) # add the LJ potential energy on
 
+def build_neighbour_lists(neighbour_cutoff):
+    cutoff2 = neighbour_cutoff**2
+    
+    for atom in atoms:
+        atom.neighbours.clear()         # clear out all of the previous neighbour lists
+
+    cells = build_cell_list()
+
+    for i, atom in enumerate(atoms):  
+        my_cell = find_cell_of_atom(atom.pos)
+
+        for cell in neighbouring_cells(my_cell):
+            if cell not in cells:
+                continue
+
+            for j in cells[cell]:
+                if j <= i:
+                    continue
+
+                r_vec = PBC_box_for_vectors(atoms[j].pos - atoms[i].pos)
+                r2 = mag2(r_vec)                          # distance between pairs without square rooting - more efficient
+
+                if r2 > cutoff2:
+                    continue
+                
+                atoms[i].neighbours.append(j)
+                atoms[j].neighbours.append(i)
+
+    # update the new last neighbour refference for each atom
+    for atom in atoms:
+        atom.last_neighbour_reference = atom.pos
+
+def find_cell_of_atom (atom_pos):
+    return (
+        int(atom_pos.x / CELL_SIZE),
+        int(atom_pos.y / CELL_SIZE),
+        int(atom_pos.z / CELL_SIZE)
+
+    )
+
+def build_cell_list ():
+    cells = {}
+
+    for i, atom in enumerate(atoms):
+        cell = find_cell_of_atom(atom.pos)
+
+        if cell not in cells:
+            cells[cell] = []
+
+        cells[cell].append(i)
+
+    return cells
+
+def neighbouring_cells(cell):
+    x,y,z = cell
+
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                yield (x+dx, y+dy, z+dz)
+
+
 # caculate physics stuff - the heart <3
 def calc_physics():
     global pot_e_total
@@ -366,8 +441,7 @@ def calc_physics():
         k = bond.K
 
         # compute the bond vector and bond lengths
-        r_vec = atoms[b].pos - atoms[a].pos
-        PBC_box_for_vectors(r_vec)
+        r_vec = PBC_box_for_vectors(atoms[b].pos - atoms[a].pos)
         r = mag(r_vec)
 
         if r == 0:                              # avoid devide by zero just in case
@@ -401,8 +475,8 @@ def calc_physics():
         BA = atoms[atomA].pos - atoms[atomB].pos                                # find vector of B to A
         BC = atoms[atomC].pos - atoms[atomB].pos                                # find vector of B to C
 
-        PBC_box_for_vectors(BA)                                                 # update the coppy vectors
-        PBC_box_for_vectors(BC)
+        BA = PBC_box_for_vectors(BA)                                                 # update the coppy vectors
+        BC = PBC_box_for_vectors(BC)
         
         r_BA = mag(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
         r_BC = mag(BC)
@@ -451,9 +525,9 @@ def calc_physics():
         b2 = atoms[a3].pos - atoms[a2].pos
         b3 = atoms[a4].pos - atoms[a3].pos
 
-        PBC_box_for_vectors(b1)                 # update the vectors of coppies
-        PBC_box_for_vectors(b2)
-        PBC_box_for_vectors(b3)
+        b1 = PBC_box_for_vectors(b1)                 # update the vectors of coppies
+        b2 = PBC_box_for_vectors(b2)
+        b3 = PBC_box_for_vectors(b3)
 
         n1 = cross(b1, b2)                      # normal to plane ABC
         n2 = cross(b2, b3)                      # normal to plane BCD
@@ -507,13 +581,17 @@ def calc_physics():
     time_taken_torsions += end_torsions - start_torsions
     
     #LJ forces and Coulombs (non bonded loop)
-    start_non_bonded = time.perf_counter()
     LJ_scale = 1.0
     coulomb_scale = 1.0
     LJ_energy_shift = 4 * LJ_EPSILON * ((LJ_SIGMA / LJ_CUTOFF)**12 - (LJ_SIGMA / LJ_CUTOFF)**6) # used so the LJ potential smoothly becomes 0 instead of cutting off
 
-    for i in range(no_balls):                   # loop over each unique atom pair once
-        for j in range(i + 1, no_balls):
+    start_LJ = time.perf_counter()
+    for i, atom in enumerate(atoms):                   # loop over each unique atom pair once
+        for j in atom.neighbours:
+
+            if j <= i:                                  # makes sure not calculating the same force twice
+                continue
+
             pair = tuple(sorted((i, j)))
 
             if pair in bonded_12 or pair in bonded_13:  # compleately skips 1-2 and 1-3 bonds
@@ -525,25 +603,64 @@ def calc_physics():
                 LJ_scale = 1                        # normal non-bonded forces on all other atoms
                 coulomb_scale = 1
 
-            r_vec = atoms[j].pos - atoms[i].pos     # find pair distances ect
-            PBC_box_for_vectors(r_vec)              # update "copy vectors"
+            r_vec = PBC_box_for_vectors(atoms[j].pos - atoms[i].pos)     # find pair distances and update the "ghost molecules" 
             r = mag(r_vec)
             r_hat = norm(r_vec)
 
             q1 = float(atoms[i].charge)             # get atom charges               
             q2 = float(atoms[j].charge)
 
+            # -- add the coulombs back in when adding PME later
+
             if r == 0 or r > LJ_CUTOFF:             # skip invalid LJ, and only calculate coulomb forces
-                coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
+                #coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
                 continue
 
             else:                                   # dont skip any non bonded forces as pair is in the cutoff region 
                 LJ_calculations(r, r_hat, LJ_scale, LJ_energy_shift, i, j)
-                coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
+                #coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
 
-    end_non_bonded = time.perf_counter()
+    end_LJ = time.perf_counter()
+    global time_taken_LJ
+    time_taken_LJ += end_LJ - start_LJ
+
+
+    start_coulombs = time.perf_counter()
+    for i in range(no_balls):
+        for j in range(i+1, no_balls):
+
+            pair = tuple(sorted((i, j)))
+
+            if pair in bonded_12 or pair in bonded_13:  # compleately skips 1-2 and 1-3 bonds
+                continue
+            
+            if pair in bonded_14:                   # dapens 1-4 LJ forces
+                coulomb_scale = 0.5
+            else:
+                coulomb_scale = 1
+
+            r_vec = PBC_box_for_vectors(atoms[j].pos - atoms[i].pos)     # find pair distances and update the "ghost molecules" 
+            r = mag(r_vec)
+
+            if r == 0:
+                continue
+
+            r_hat = norm(r_vec)
+
+            q1 = float(atoms[i].charge)             # get atom charges               
+            q2 = float(atoms[j].charge)
+
+            coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
+
+
+
+    end_coulombs = time.perf_counter()
+    global time_taken_coulombs
+    time_taken_coulombs += end_coulombs - start_coulombs
+
     global time_taken_non_bonded
-    time_taken_non_bonded += end_non_bonded - start_non_bonded
+    time_taken_non_bonded = time_taken_coulombs + time_taken_LJ
+    
 
     end_all_foces = time.perf_counter()
     global time_taken_all_foces
@@ -551,23 +668,27 @@ def calc_physics():
 
     return pot_e_total                                
 
-# initial forces and model before simulation starts - need valid forces before starting
+# initial forces and model and neighbour list before simulation starts - need valid forces before starting
 for i in range(no_balls):
     atoms[i].force = vector(0, 0, 0)
 pot_e = calc_physics()
 render_initial_model()
+build_neighbour_lists(NEIGHBOUR_CUTOFF)
 
 step = 0
+prev_step_count = 0
 relaxing = True 
 relax_steps = 2000
 E0 = None
 average_total_energy = 0
+max_displacement2 = 0
 
 # Main light (camera light)
 cam_light = local_light(
     pos=scene.camera.pos - scene.camera.axis.norm()*4,
     color=color.gray(0.65)
 )
+
 
 # running simulation
 while True:
@@ -619,6 +740,22 @@ while True:
     total_e = k_e + pot_e
     step += 1
 
+    # find the displacement of the atom this timestep
+    for atom in atoms:
+        disp2 = PBC_box_for_vectors(atom.pos - atom.last_neighbour_reference)
+
+        displacement2 = mag2(disp2)
+
+        if displacement2 > max_displacement2:
+            max_displacement2 = displacement2
+
+    if max_displacement2 > (SKIN_CUTOFF / 2)**2:
+        prev_step_count = step - prev_step_count
+        print(f"New List After {prev_step_count} Steps")
+        build_neighbour_lists(NEIGHBOUR_CUTOFF)
+        max_displacement2 = 0
+        
+
     start_total_graphics = time.perf_counter() 
     # update graphics once per frame
     for i in range(no_balls):
@@ -636,31 +773,35 @@ while True:
 
     time_other = time_taken_total - (time_taken_graphics + time_taken_all_foces)
 
-    # printing and debuging stuff that prints every 100 timesteps
-    if step % 100 == 0:
-        average_total_energy = average_total_energy/100
+    # printing and debuging stuff that prints every x timesteps
+    timestep_x = 100
+    if step % timestep_x == 0:
+        average_total_energy = average_total_energy/timestep_x
 
         steps.append(step)
         avg_sys_energy_values.append(average_total_energy)
-        line.set_data(steps, avg_sys_energy_values)
+        #line.set_data(steps, avg_sys_energy_values)
 
+        '''
         ax.relim()              # Recalculate limits
         ax.autoscale_view()     # Expand axes if needed
         plt.draw()
         plt.pause(0.001)
         average_total_energy = 0
-
+        '''
         print(f"Step: {step}")
         print(f"KE: {k_e:.6f}  PE: {pot_e:.6f}  Total: {total_e:.6f}")
         
-        print(f"Time By % of Graphics: {((time_taken_graphics/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of Bonds: {((time_taken_bonds/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of Bond Angles: {((time_taken_bond_angles/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of Torsions: {((time_taken_torsions/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of non_bonded: {((time_taken_non_bonded/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of total forces: {((time_taken_all_foces/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time By % of other: {((time_other/100)/time_taken_total)*10000:.6f} %")
-        print(f"Time Taken per cycle: {time_taken_total/100:.6f}s")
+        print(f"Time By % of Graphics: {((time_taken_graphics/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of Bonds: {((time_taken_bonds/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of Bond Angles: {((time_taken_bond_angles/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of Torsions: {((time_taken_torsions/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of LJ: {((time_taken_LJ/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of Coulombs: {((time_taken_coulombs/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of non_bonded: {((time_taken_non_bonded/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of total forces: {((time_taken_all_foces/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of other: {((time_other/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time Taken per cycle: {time_taken_total/timestep_x:.6f}s")
         
         time_taken_all_foces = 0
         time_taken_exclusions = 0
@@ -668,6 +809,8 @@ while True:
         time_taken_bond_angles = 0
         time_taken_torsions = 0
         time_taken_non_bonded = 0
+        time_taken_coulombs = 0
+        time_taken_LJ = 0
         time_taken_graphics = 0
         time_taken_total = 0
         time_other = 0

@@ -32,6 +32,7 @@ n = []
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/C10H23NO6/C10H23NO6_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt
+#C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_PDB.txt
 f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt", "r")             # opens the pos file of the molecule
 
 for i in f:
@@ -54,6 +55,7 @@ f.close()
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/C10H23NO6/C10H23NO6_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt
+#C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_ITP.txt
 f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt")
 
 
