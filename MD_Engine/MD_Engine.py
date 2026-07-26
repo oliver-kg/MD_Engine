@@ -4,7 +4,15 @@ import math
 import read_molecules
 import time
 import matplotlib.pyplot as plt
+from random import uniform
 
+# ------------------------
+# Length = nm
+# Mass = amu
+# Time = ps
+# Charge = e
+# Energy = KL/mol
+#
 # -- CLASS STRUCTURES --
 
 # dictionary of different elements
@@ -183,28 +191,133 @@ def render_initial_model():
         )
         bond_visuals.append(c)
 
-def build_molecule_from_file():
-    # create atoms from the read_molecules python file
+def load_molecule_template():
+
+    atom_pos = []
+    atom_charge = []
+    atom_type = []
+
     for ind in read_molecules.atom_index:
-        atoms.append(Atom(read_molecules.atom_pos[ind], vector(0,0,0), vector(0,0,0), read_molecules.atom_charge[ind], read_molecules.atom_type[ind]))
+        atom_pos.append(read_molecules.atom_pos[ind])
+        atom_charge.append(read_molecules.atom_charge[ind])
+        atom_type.append(read_molecules.atom_type[ind])
 
-    # create bonds from the read_molecules python file    
-    for ind in range(len(read_molecules.a_a)):    
-        bonds.append(Bond(read_molecules.a_a[ind], read_molecules.a_b[ind], read_molecules.r_0[ind], read_molecules.k_engine[ind]))
+    bonds = []
 
-    # create angles from the read_molecules python file
+    for ind in range(len(read_molecules.a_a)):
+        bonds.append((
+            read_molecules.a_a[ind],
+            read_molecules.a_b[ind],
+            read_molecules.r_0[ind],
+            read_molecules.k_engine[ind]
+        ))
+
+    angles = []
+
     for ind in range(len(read_molecules.a_i)):
-        bond_angles.append(BondAngle(read_molecules.b_angle[ind], 0, read_molecules.a_i[ind], read_molecules.a_j[ind], read_molecules.a_k[ind], read_molecules.k_ang[ind]))
+        angles.append((
+            read_molecules.a_i[ind],
+            read_molecules.a_j[ind],
+            read_molecules.a_k[ind],
+            read_molecules.b_angle[ind],
+            read_molecules.k_ang[ind]
+        ))
 
-    # create dihedrals from the read_molecules python file
+    torsions = []
+
     for ind in range(len(read_molecules.d_i)):
-        torsion_angles.append(TorsionAngle(read_molecules.d_i[ind], read_molecules.d_j[ind], read_molecules.d_k[ind], read_molecules.d_l[ind], [(read_molecules.k_dih[ind], read_molecules.n[ind], read_molecules.ph[ind])]))
+        torsions.append((
+            read_molecules.d_i[ind],
+            read_molecules.d_j[ind],
+            read_molecules.d_k[ind],
+            read_molecules.d_l[ind],
+            read_molecules.k_dih[ind],
+            read_molecules.n[ind],
+            read_molecules.ph[ind]
+        ))
+
+    return atom_pos, atom_charge, atom_type, bonds, angles, torsions
+
+def insert_molecule(template):
+
+    atom_pos, atom_charge, atom_type, bond_data, angle_data, torsion_data = template
+
+    # Where this copy will go
+    offset_position = vector(
+        uniform(0, PBC_BOX_LENGTH/3),
+        uniform(0, PBC_BOX_LENGTH/3),
+        uniform(0, PBC_BOX_LENGTH/3)
+    )
+
+# First new atom index
+    atom_offset = len(atoms)
+
+    atom_indices = []
+
+    # Create atoms
+    for pos, charge, atom_type_name in zip(atom_pos,
+                                           atom_charge,
+                                           atom_type):
+
+        atoms.append(
+            Atom(
+                pos + offset_position,
+                vector(0,0,0),
+                vector(0,0,0),
+                charge,
+                atom_type_name
+            )
+        )
+        atom_indices.append(len(atoms)-1)
+
+    molecules.append(Molecule(atom_indices))
+
+    # Create bonds
+    for a, b, r0, k in bond_data:
+
+        bonds.append(
+            Bond(
+                a + atom_offset,
+                b + atom_offset,
+                r0,
+                k
+            )
+        )
+
+    # Create angles
+    for i, j, k_atom, theta0, k_theta in angle_data:
+
+        bond_angles.append(
+            BondAngle(
+                theta0,
+                0,
+                i + atom_offset,
+                j + atom_offset,
+                k_atom + atom_offset,
+                k_theta
+            )
+        )
+
+    # Create torsions
+    for i, j, k_atom, l, k_dih, n, phase in torsion_data:
+
+        torsion_angles.append(
+            TorsionAngle(
+                i + atom_offset,
+                j + atom_offset,
+                k_atom + atom_offset,
+                l + atom_offset,
+                [(k_dih, n, phase)]
+            )
+        )
 
 #create test molecules
-build_molecule_from_file()
-atoms.append(Atom(vector(-0.51,0.21,0.81), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
-atoms.append(Atom(vector(-0.31,0.41,0.61), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
-atoms.append(Atom(vector(-0.81,0.31,0.41), vector(0,0,0), vector(0.1,0.1,0.1), 0.01, "H"))
+
+water = load_molecule_template()
+
+for i in range(32):
+    insert_molecule(water)
+
 # create number of atoms after all atoms have been made
 no_balls = len(atoms)
 
@@ -397,9 +510,9 @@ def build_neighbour_lists(neighbour_cutoff):
 
 def find_cell_of_atom (atom_pos):
     return (
-        int(atom_pos.x / CELL_SIZE),
-        int(atom_pos.y / CELL_SIZE),
-        int(atom_pos.z / CELL_SIZE)
+        math.floor(atom_pos.x / CELL_SIZE),
+        math.floor(atom_pos.y / CELL_SIZE),
+        math.floor(atom_pos.z / CELL_SIZE)
 
     )
 
@@ -624,7 +737,6 @@ def calc_physics():
     global time_taken_LJ
     time_taken_LJ += end_LJ - start_LJ
 
-
     start_coulombs = time.perf_counter()
     for i in range(no_balls):
         for j in range(i+1, no_balls):
@@ -652,8 +764,6 @@ def calc_physics():
 
             coulombs_calculations(coulomb_scale, q1, q2, r, r_hat, i, j)
 
-
-
     end_coulombs = time.perf_counter()
     global time_taken_coulombs
     time_taken_coulombs += end_coulombs - start_coulombs
@@ -661,7 +771,6 @@ def calc_physics():
     global time_taken_non_bonded
     time_taken_non_bonded = time_taken_coulombs + time_taken_LJ
     
-
     end_all_foces = time.perf_counter()
     global time_taken_all_foces
     time_taken_all_foces += end_all_foces - start_all_foces
@@ -679,6 +788,7 @@ step = 0
 prev_step_count = 0
 relaxing = True 
 relax_steps = 2000
+timestep_x = 50
 E0 = None
 average_total_energy = 0
 max_displacement2 = 0
@@ -688,7 +798,6 @@ cam_light = local_light(
     pos=scene.camera.pos - scene.camera.axis.norm()*4,
     color=color.gray(0.65)
 )
-
 
 # running simulation
 while True:
@@ -774,9 +883,9 @@ while True:
     time_other = time_taken_total - (time_taken_graphics + time_taken_all_foces)
 
     # printing and debuging stuff that prints every x timesteps
-    timestep_x = 100
     if step % timestep_x == 0:
         average_total_energy = average_total_energy/timestep_x
+
 
         steps.append(step)
         avg_sys_energy_values.append(average_total_energy)
@@ -789,9 +898,25 @@ while True:
         plt.pause(0.001)
         average_total_energy = 0
         '''
+
         print(f"Step: {step}")
         print(f"KE: {k_e:.6f}  PE: {pot_e:.6f}  Total: {total_e:.6f}")
+
+        '''
+        for bond in bonds:
+                a = bond.a1
+                b = bond.a2
+                r_vec = atoms[b].pos - atoms[a].pos
+                PBC_box_for_vectors(r_vec)
+                print(f"Bond {a}-{b}: {mag(r_vec):.6f}")
+                
+        for angle in bond_angles:
+            print(f"Angle: {math.degrees(angle.theta)}")
         
+        for angle in torsion_angles:
+            print(f"Real Angle: {math.degrees(angle.psi)} ")
+
+        '''
         print(f"Time By % of Graphics: {((time_taken_graphics/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Bonds: {((time_taken_bonds/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Bond Angles: {((time_taken_bond_angles/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
@@ -802,7 +927,7 @@ while True:
         print(f"Time By % of total forces: {((time_taken_all_foces/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of other: {((time_other/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time Taken per cycle: {time_taken_total/timestep_x:.6f}s")
-        
+
         time_taken_all_foces = 0
         time_taken_exclusions = 0
         time_taken_bonds = 0
