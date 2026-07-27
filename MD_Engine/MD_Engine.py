@@ -30,10 +30,10 @@ class Atom:
     def __init__(self, pos, vel, force, charge, element):
         props = ELEMENTS[element]
         self.mass = props["mass"]
-        self.pos = pos
+        self.pos = np.array([pos.x, pos.y, pos.z], dtype=np.float64)
         self.last_neighbour_reference = vector(0,0,0)
-        self.vel = vel
-        self.force = force
+        self.vel = np.array([vel.x, vel.y, vel.z], dtype=np.float64)
+        self.force = np.array([force.x, force.y, force.z], dtype=np.float64)
         self.charge = float(charge)
         self.radius = props["radius"]
         self.element = element
@@ -76,7 +76,6 @@ class TorsionAngle:
         # create structure for having more than one term for 3-term torsion equations
         for k, n, delta_deg in terms:
             self.terms.append((k, n, math.radians(delta_deg)))
-
 
 # molecule properties arrays
 atoms = []
@@ -183,17 +182,12 @@ def keyup(evt):
 def render_initial_model():
     # create balls
     for a in atoms:
-        b = sphere(pos=a.pos, radius=a.radius, color=a.base_colour, make_trail=False)
+        b = sphere(pos=np_to_vec(a.pos),radius=a.radius,color=a.base_colour,make_trail=False)
         balls.append(b)
 
     # Draw lines between bonds
     for bond in bonds:
-        c = cylinder(
-            pos=atoms[bond.a1].pos,
-            axis=atoms[bond.a2].pos - atoms[bond.a1].pos,
-            radius=0.01,
-            color=vector(1,1,1)
-        )
+        c = cylinder(pos=np_to_vec(atoms[bond.a1].pos),axis=np_to_vec(atoms[bond.a2].pos - atoms[bond.a1].pos),radius=0.01,color=vector(1,1,1))
         bond_visuals.append(c)
 
 def load_molecule_template():
@@ -323,24 +317,27 @@ water = load_molecule_template()
 for i in range(32):
     insert_molecule(water)
 
+def vec_to_np(v):
+    return np.array([v.x, v.y, v.z], dtype=np.float64)
+
+
+def np_to_vec(a):
+    return vector(a[0], a[1], a[2])
+
+
+def norm_np(v):
+    mag = np.linalg.norm(v)
+    if mag < 1e-12:
+        return np.zeros(3)
+    return v / mag
+
+
+def mag2_np(v):
+    return np.dot(v, v)
+
+
 # create number of atoms after all atoms have been made
 no_balls = len(atoms)
-
-# create NumPy Vectors
-
-positions = np.zeros((no_balls,3), dtype=np.float64)
-velocities = np.zeros((no_balls,3), dtype=np.float64)
-forces = np.zeros((no_balls,3), dtype=np.float64)
-
-charges = np.zeros(no_balls)
-masses = np.zeros(no_balls)
-
-for i, atom in enumerate(atoms):
-    positions[i] = [atom.pos.x, atom.pos.y, atom.pos.z]
-    velocities[i] = [atom.vel.x, atom.vel.y, atom.vel.z]
-    forces[i] = [0.0,0.0,0.0]
-    charges[i] = atom.charge
-    masses[i] = atom.mass
 
 # Lennard Jones Force Equation (VDW's)
 def calc_LJ_force(dist, direction):
@@ -350,14 +347,14 @@ def calc_LJ_force(dist, direction):
 def calc_KE():
     k_e = 0
     for i in range(no_balls): 
-        k_e = k_e + (0.5*atoms[i].mass*(dot(atoms[i].vel, atoms[i].vel))) # use dot product as v^2 to calc ke
+        k_e = k_e + (0.5*atoms[i].mass*(np.dot(atoms[i].vel, atoms[i].vel))) # use dot product as v^2 to calc ke
     return k_e
 
 # calc Coulombs
 def calc_coulombs(q1, q2, r, direction, k):
 
     if r == 0:
-        return vector(0, 0, 0)
+        return np.zeros(3, dtype=np.float64)
 
     erfc_term = math.erfc(PME_ALPHA * r)
 
@@ -435,44 +432,47 @@ def wrap_molecules():
 
     for mol in molecules:
         ref_pos = atoms[mol.atom_indices[0]].pos
-        shift = vector(0, 0, 0)
+        shift = np.zeros(3, dtype=np.float64)
 
-        if ref_pos.x > half:
-            shift.x -= PBC_BOX_LENGTH
-        elif ref_pos.x < -half:
-            shift.x += PBC_BOX_LENGTH
+        if ref_pos[0] > half:
+            shift[0] -= PBC_BOX_LENGTH
+        elif ref_pos[0] < -half:
+            shift[0] += PBC_BOX_LENGTH
 
-        if ref_pos.y > half:
-            shift.y -= PBC_BOX_LENGTH
-        elif ref_pos.y < -half:
-            shift.y += PBC_BOX_LENGTH
+        if ref_pos[1] > half:
+            shift[1] -= PBC_BOX_LENGTH
+        elif ref_pos[1] < -half:
+            shift[1] += PBC_BOX_LENGTH
 
-        if ref_pos.z > half:
-            shift.z -= PBC_BOX_LENGTH
-        elif ref_pos.z < -half:
-            shift.z += PBC_BOX_LENGTH
+        if ref_pos[2] > half:
+            shift[2] -= PBC_BOX_LENGTH
+        elif ref_pos[2] < -half:
+            shift[2] += PBC_BOX_LENGTH
 
-        if shift.x != 0 or shift.y != 0 or shift.z != 0:
+        if shift[0] != 0 or shift[1] != 0 or shift[2] != 0:
             for i in mol.atom_indices:
                 atoms[i].pos += shift
 
 # minimum image periodic correction - turns the vector into the nearest image vector
-def PBC_box_for_vectors(r_vector):                                  
-    half = PBC_BOX_LENGTH / 2
-    if r_vector.x > half:
-        r_vector.x = r_vector.x - PBC_BOX_LENGTH
-    if r_vector.x < -half:
-        r_vector.x = r_vector.x + PBC_BOX_LENGTH
+def PBC_box_for_vectors(r_vector):
 
-    if r_vector.y > half:
-        r_vector.y = r_vector.y - PBC_BOX_LENGTH
-    if r_vector.y < -half:
-        r_vector.y = r_vector.y + PBC_BOX_LENGTH
+    half = PBC_BOX_LENGTH * 0.5
+    box = PBC_BOX_LENGTH
 
-    if r_vector.z > half:
-        r_vector.z = r_vector.z - PBC_BOX_LENGTH
-    if r_vector.z < -half:
-        r_vector.z = r_vector.z + PBC_BOX_LENGTH
+    if r_vector[0] > half:
+        r_vector[0] -= box
+    elif r_vector[0] < -half:
+        r_vector[0] += box
+
+    if r_vector[1] > half:
+        r_vector[1] -= box
+    elif r_vector[1] < -half:
+        r_vector[1] += box
+
+    if r_vector[2] > half:
+        r_vector[2] -= box
+    elif r_vector[2] < -half:
+        r_vector[2] += box
 
     return r_vector
 
@@ -548,7 +548,7 @@ def build_neighbour_lists(neighbour_cutoff):
                     continue
 
                 r_vec = PBC_box_for_vectors(atoms[j].pos - atoms[i].pos)
-                r2 = mag2(r_vec)                          # distance between pairs without square rooting - more efficient
+                r2 = np.dot(r_vec, r_vec)                          # distance between pairs without square rooting - more efficient
 
                 if r2 > cutoff2:
                     continue
@@ -562,9 +562,9 @@ def build_neighbour_lists(neighbour_cutoff):
 
 def find_cell_of_atom(atom_pos):
     return (
-        math.floor(atom_pos.x / CELL_SIZE),
-        math.floor(atom_pos.y / CELL_SIZE),
-        math.floor(atom_pos.z / CELL_SIZE)
+        math.floor(atom_pos[0] / CELL_SIZE),
+        math.floor(atom_pos[1] / CELL_SIZE),
+        math.floor(atom_pos[2] / CELL_SIZE)
 
     )
 
@@ -593,10 +593,10 @@ def neighbouring_cells(cell):
 
 # Convert a VPython position into fractional mesh coordinates
 def position_to_mesh(pos):
-    half = PBC_BOX_LENGTH / 2
-    x = (pos.x + half) / PBC_BOX_LENGTH
-    y = (pos.y + half) / PBC_BOX_LENGTH
-    z = (pos.z + half) / PBC_BOX_LENGTH
+    half = PBC_BOX_LENGTH * 0.5
+    x = (pos[0] + half) / PBC_BOX_LENGTH
+    y = (pos[1] + half) / PBC_BOX_LENGTH
+    z = (pos[2] + half) / PBC_BOX_LENGTH
 
     return (
         x * PME_GRID,
@@ -881,7 +881,7 @@ def reciprocal_interpolation(potential):
         Fx = COULOMB_CONSTANT * atom.charge * scale * dPhidx
         Fy = COULOMB_CONSTANT * atom.charge * scale * dPhidy
         Fz = COULOMB_CONSTANT * atom.charge * scale * dPhidz
-        atom.force -= vector(Fx, Fy, Fz)
+        atom.force -= np.array([Fx, Fy, Fz], dtype=np.float64)
 
 PME_SELF_ENERGY = 0.0
 
@@ -907,14 +907,16 @@ def bond_forces():
 
         # compute the bond vector and bond lengths
         r_vec = PBC_box_for_vectors(atoms[b].pos - atoms[a].pos)
-        r = mag(r_vec)
+        r = np.linalg.norm(r_vec)
 
         if r < 1e-12:                              # avoid devide by zero just in case
             continue
 
-        r_hat = norm(r_vec)                     # bond direction
+        r_hat = r_vec / r                     # bond direction
 
         F = 2 * k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+
+
 
         atoms[a].force += F                          # apply Newtons third law - equal and opposite forces
         atoms[b].force -= F
@@ -946,13 +948,13 @@ def angle_forces():
         BA = PBC_box_for_vectors(BA)                                                 # update the coppy vectors
         BC = PBC_box_for_vectors(BC)
         
-        r_BA = mag(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
-        r_BC = mag(BC)
+        r_BA = np.linalg.norm(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
+        r_BC = np.linalg.norm(BC)
         
         if r_BA < 1e-12 or r_BC < 1e-12:
             continue
         
-        theta_cos = (dot(BA, BC))/(r_BA*r_BC)                                           # calculate the dot product hrer
+        theta_cos = np.dot(BA, BC) / (r_BA * r_BC)                                          # calculate the dot product hrer
         theta_cos = max(-1.0, min(1.0, theta_cos))                                      # clamp for safety
         theta = math.acos(theta_cos)                                                    
         angle.theta = theta                                                             # update theta
@@ -998,20 +1000,20 @@ def torsion_forces():
         b2 = PBC_box_for_vectors(b2)
         b3 = PBC_box_for_vectors(b3)
 
-        n1 = cross(b1, b2)                      # normal to plane ABC
-        n2 = cross(b2, b3)                      # normal to plane BCD
+        n1 = np.cross(b1, b2)                      # normal to plane ABC
+        n2 = np.cross(b2, b3)                      # normal to plane BCD
 
         eps = 1e-12
-        n1_sq = dot(n1, n1)
-        n2_sq = dot(n2, n2)
-        b2_sq = dot(b2, b2)
-        b2_mag = mag(b2)
+        n1_sq = np.dot(n1, n1)
+        n2_sq = np.dot(n2, n2)
+        b2_sq = np.dot(b2, b2)
+        b2_mag = np.linalg.norm(b2)
 
         if n1_sq < eps or n2_sq < eps or b2_sq < eps:    # makes sure small values dont blow the system up
             continue
         
-        x = dot(n1, n2)
-        y = dot(cross(n1, n2), norm(b2))
+        x = np.dot(n1, n2)
+        y = np.dot(np.cross(n1, n2), b2 / b2_mag)
 
         psi = math.atan2(y, x)                  # caluclate current psi angle
         angle.psi = psi 
@@ -1030,8 +1032,8 @@ def torsion_forces():
         f_a = fa_pref * n1                              # aligning the forces with the direction to the plane
         f_d = fd_pref * n2
 
-        c1 = dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
-        c2 = dot(b3, b2) / b2_sq
+        c1 = np.dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
+        c2 = np.dot(b3, b2) / b2_sq
 
         f_b = -(1.0 + c1) * f_a + c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
         f_c = f_c = -(f_a + f_b + f_d)
@@ -1071,8 +1073,8 @@ def non_bonded_forces():
                 coulomb_scale = 1
 
             r_vec = PBC_box_for_vectors(atoms[j].pos - atoms[i].pos)     # find pair distances and update the "ghost molecules" 
-            r = mag(r_vec)
-            r_hat = norm(r_vec)
+            r = np.linalg.norm(r_vec)
+            r_hat = r_vec / np.linalg.norm(r_vec)
 
             q1 = float(atoms[i].charge)             # get atom charges               
             q2 = float(atoms[j].charge)
@@ -1157,8 +1159,8 @@ cam_light = local_light(
 )
 
 # initial forces and model and neighbour list before simulation starts - need valid forces before starting
-for i in range(no_balls):
-    atoms[i].force = vector(0, 0, 0)
+for atom in atoms:
+    atom.force.fill(0.0)
 pot_e = calc_physics()
 render_initial_model()
 build_neighbour_lists(NEIGHBOUR_CUTOFF)
@@ -1183,6 +1185,7 @@ while True:
     for i in range(no_balls):
         atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * TIME_STEP     # first half-step velocity update - uses current force to push velocity halfway forward
 
+
     # 2. position update
     for i in range(no_balls):
         atoms[i].pos += atoms[i].vel * TIME_STEP                      # update pos
@@ -1192,7 +1195,7 @@ while True:
 
     # 4. reset forces
     for i in range(no_balls):
-        atoms[i].force = vector(0, 0, 0)                             # clear old forces before computing new ones
+        atoms[i].force = np.zeros(3, dtype=np.float64)                             # clear old forces before computing new ones
 
     # 5. compute new forces
     pot_e = calc_physics()                                           # now get new forces at the new positions
@@ -1224,7 +1227,7 @@ while True:
     for atom in atoms:
         disp2 = PBC_box_for_vectors(atom.pos - atom.last_neighbour_reference)
 
-        displacement2 = mag2(disp2)
+        displacement2 = np.dot(disp2,disp2)
 
         if displacement2 > max_displacement2:
             max_displacement2 = displacement2
@@ -1241,11 +1244,11 @@ while True:
 
     # update graphics once per frame
     for i in range(no_balls):
-        balls[i].pos = atoms[i].pos                                 # moves balls to current pos
+        balls[i].pos = np_to_vec(atoms[i].pos)                                 # moves balls to current pos
 
     for idx, bond in enumerate(bonds):                              # update the bond visuals
-        bond_visuals[idx].pos = atoms[bond.a1].pos
-        bond_visuals[idx].axis = atoms[bond.a2].pos - atoms[bond.a1].pos
+        bond_visuals[idx].pos = np_to_vec(atoms[bond.a1].pos)
+        bond_visuals[idx].axis = np_to_vec(atoms[bond.a2].pos - atoms[bond.a1].pos)
 
     # ----------------------------
 
