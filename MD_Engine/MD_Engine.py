@@ -6,10 +6,11 @@ import time
 from random import uniform
 import numpy as np
 import matplotlib.pyplot as plt
+import cupy as cp
+
 
 # ----- Other Files -----
 from bonded import bond_forces, angle_forces, torsion_forces
-from periodic_boundary import minimum_image, wrap_molecules
 # ------------------------
 # Length = nm
 # Mass = amu
@@ -29,19 +30,14 @@ ELEMENTS = {
     "Cl": {"mass": 35.453, "radius": 0.05, "color": vector(0, 1, 0)}
 }
 
-# atom class
 class Atom:
-    def __init__(self, pos, vel, force, charge, element):
+    def __init__(self, element):
         props = ELEMENTS[element]
-        self.mass = props["mass"]
-        self.pos = np.array([pos.x, pos.y, pos.z], dtype=np.float64)
-        self.last_neighbour_reference = vector(0,0,0)
-        self.vel = np.array([vel.x, vel.y, vel.z], dtype=np.float64)
-        self.force = np.array([force.x, force.y, force.z], dtype=np.float64)
-        self.charge = float(charge)
+
         self.radius = props["radius"]
         self.element = element
         self.base_colour = props["color"]
+        self.index = -1
         self.neighbours = []
 
 # molecule class
@@ -81,17 +77,93 @@ class TorsionAngle:
         for k, n, delta_deg in terms:
             self.terms.append((k, n, math.radians(delta_deg)))
 
-class System:
 
+class System:
     def __init__(self):
 
-        self.atoms = atoms
+        self.positions = positions
+        self.velocities = velocities
+        self.forces = forces
+
+        self.charges = charges
+        self.masses = masses
+
         self.bonds = bonds
-        self.molecules = molecules
         self.bond_angles = bond_angles
         self.torsion_angles = torsion_angles
-        self.pot_e_total = 0.0
+        self.molecules = molecules
+
+        self.bond_a = bond_a
+        self.bond_b = bond_b
+        self.bond_r0 = bond_r0
+        self.bond_k = bond_k
+
         self.PBC_BOX_LENGTH = PBC_BOX_LENGTH
+   
+    def minimum_image_many(self, r_vectors):
+        half = self.PBC_BOX_LENGTH * 0.5
+        box = self.PBC_BOX_LENGTH
+
+        r_vectors[r_vectors > half] -= box
+        r_vectors[r_vectors < -half] += box
+
+        return r_vectors
+
+    # minimum image periodic correction - turns the vector into the nearest image vector
+    def minimum_image(self, r_vector):
+        
+
+        half = self.PBC_BOX_LENGTH * 0.5
+        box = self.PBC_BOX_LENGTH
+
+        if r_vector[0] > half:
+            r_vector[0] -= box
+        elif r_vector[0] < -half:
+            r_vector[0] += box
+
+        if r_vector[1] > half:
+            r_vector[1] -= box
+        elif r_vector[1] < -half:
+            r_vector[1] += box
+
+        if r_vector[2] > half:
+            r_vector[2] -= box
+        elif r_vector[2] < -half:
+            r_vector[2] += box
+
+        return r_vector
+
+    # checks if a molecule has reached the box boundery and needs warping
+    def wrap_molecules(self):
+        positions = self.positions
+        molecules = self.molecules
+        PBC_BOX_LENGTH = self.PBC_BOX_LENGTH
+
+        half = PBC_BOX_LENGTH / 2
+
+        for mol in molecules:
+            ref_pos = positions[mol.atom_indices[0]]
+            shift = cp.zeros(3, dtype=cp.float64)
+
+            if ref_pos[0] > half:
+                shift[0] -= PBC_BOX_LENGTH
+            elif ref_pos[0] < -half:
+                shift[0] += PBC_BOX_LENGTH
+
+            if ref_pos[1] > half:
+                shift[1] -= PBC_BOX_LENGTH
+            elif ref_pos[1] < -half:
+                shift[1] += PBC_BOX_LENGTH
+
+            if ref_pos[2] > half:
+                shift[2] -= PBC_BOX_LENGTH
+            elif ref_pos[2] < -half:
+                shift[2] += PBC_BOX_LENGTH
+
+            if shift[0] != 0 or shift[1] != 0 or shift[2] != 0:
+                for i in mol.atom_indices:
+                    positions[i] += shift
+
 
 
 # molecule properties arrays
@@ -102,6 +174,10 @@ bond_angles = []
 torsion_angles = []
 bond_visuals = []
 
+initial_positions = []
+initial_velocities = []
+initial_charges = []
+initial_masses = []
 
 real_space_PE = 0.0
 reciprocal_PE = 0.0
@@ -147,10 +223,10 @@ PME_ALPHA = 3
 PME_GRID = 32
 BSPLINE_ORDER = 4
 
-rho = np.zeros((PME_GRID, PME_GRID, PME_GRID), dtype=float)
+rho = cp.zeros((PME_GRID, PME_GRID, PME_GRID), dtype=float)
 
 # ----- SETUP ------
-
+'''
 plt.ion()  # Interactive mode
 fig, ax = plt.subplots()
 line, = ax.plot([], [], lw=2)
@@ -158,9 +234,7 @@ ax.set_xlabel("Timestep")
 ax.set_ylabel("Average System Energy")
 ax.set_title("Average System Energy (100-step average)")
 ax.grid(True)
-
-
-
+'''
 # Get screen dimensions
 root = tk.Tk()
 screen_width = root.winfo_screenwidth()
@@ -209,12 +283,12 @@ def keyup(evt):
 def render_initial_model():
     # create balls
     for a in atoms:
-        b = sphere(pos=np_to_vec(a.pos),radius=a.radius,color=a.base_colour,make_trail=False)
+        b = sphere(pos=np_to_vec(positions[a.index]),radius=a.radius,color=a.base_colour,make_trail=False)
         balls.append(b)
 
     # Draw lines between bonds
     for bond in bonds:
-        c = cylinder(pos=np_to_vec(atoms[bond.a1].pos),axis=np_to_vec(atoms[bond.a2].pos - atoms[bond.a1].pos),radius=0.01,color=vector(1,1,1))
+        c = cylinder(pos=np_to_vec(positions[bond.a1]),axis=np_to_vec(positions[bond.a2] - positions[bond.a1]),radius=0.01,color=vector(1,1,1))
         bond_visuals.append(c)
 
 def load_molecule_template():
@@ -285,15 +359,17 @@ def insert_molecule(template):
                                            atom_charge,
                                            atom_type):
 
-        atoms.append(
-            Atom(
-                pos + offset_position,
-                vector(0,0,0),
-                vector(0,0,0),
-                charge,
-                atom_type_name
-            )
-        )
+        atoms.append(Atom(atom_type_name))
+
+        new_pos = pos + offset_position
+        initial_positions.append(cp.asarray([new_pos.x, new_pos.y, new_pos.z], dtype=cp.float64))
+
+        initial_velocities.append(cp.zeros(3))
+
+        initial_charges.append(float(charge))
+
+        initial_masses.append(ELEMENTS[atom_type_name]["mass"])
+
         atom_indices.append(len(atoms)-1)
 
     molecules.append(Molecule(atom_indices))
@@ -341,24 +417,56 @@ def insert_molecule(template):
 
 molecule_template = load_molecule_template()
 
-
-
 for i in range(2):
     insert_molecule(molecule_template)
 
 def vec_to_np(v):
-    return np.array([v.x, v.y, v.z], dtype=np.float64)
+    return cp.array([v.x, v.y, v.z], dtype=cp.float64)
 
 def np_to_vec(a):
     return vector(a[0], a[1], a[2])
 
 
+
 # create number of atoms after all atoms have been made
 no_balls = len(atoms)
+
+positions = cp.asarray(initial_positions, dtype=cp.float64)
+velocities = cp.asarray(initial_velocities, dtype=cp.float64)
+forces = cp.zeros_like(positions)
+
+charges = cp.asarray(initial_charges, dtype=cp.float64)
+masses = cp.asarray(initial_masses, dtype=cp.float64)
+
+last_neighbour_reference = cp.zeros((no_balls,3), dtype=cp.float64)
+
+bond_a = cp.asarray(
+    [bond.a1 for bond in bonds],
+    dtype=cp.int32
+)
+
+bond_b = cp.asarray(
+    [bond.a2 for bond in bonds],
+    dtype=cp.int32
+)
+
+bond_r0 = cp.asarray(
+    [bond.ideal_dist for bond in bonds],
+    dtype=cp.float64
+)
+
+bond_k = cp.asarray(
+    [bond.K for bond in bonds],
+    dtype=cp.float64
+)
+
+
+for i, atom in enumerate(atoms):
+    atom.index = i
+
+
 system = System()
-
 # ----- Components -----
-
 
 # Lennard Jones Force Equation (VDW's)
 def calc_LJ_force(dist, direction):
@@ -368,14 +476,14 @@ def calc_LJ_force(dist, direction):
 def calc_KE():
     k_e = 0
     for i in range(no_balls): 
-        k_e = k_e + (0.5*atoms[i].mass*(np.dot(atoms[i].vel, atoms[i].vel))) # use dot product as v^2 to calc ke
+        k_e = k_e + (0.5*masses[i]*(cp.dot(velocities[i], velocities[i]))) # use dot product as v^2 to calc ke
     return k_e
 
 # calc Coulombs
 def calc_coulombs(q1, q2, r, direction, k):
 
     if r < 1e-12:
-        return np.zeros(3, dtype=np.float64)
+        return cp.zeros(3, dtype=cp.float64)
 
     erfc_term = math.erfc(PME_ALPHA * r)
 
@@ -447,33 +555,6 @@ def build_exclusion_sets():
 
 bonded_12, bonded_13, bonded_14 = build_exclusion_sets()    # builds the sets to be used
 
-# checks if a molecule has reached the box boundery and needs warping
-def wrap_molecules():
-    half = PBC_BOX_LENGTH / 2
-
-    for mol in molecules:
-        ref_pos = atoms[mol.atom_indices[0]].pos
-        shift = np.zeros(3, dtype=np.float64)
-
-        if ref_pos[0] > half:
-            shift[0] -= PBC_BOX_LENGTH
-        elif ref_pos[0] < -half:
-            shift[0] += PBC_BOX_LENGTH
-
-        if ref_pos[1] > half:
-            shift[1] -= PBC_BOX_LENGTH
-        elif ref_pos[1] < -half:
-            shift[1] += PBC_BOX_LENGTH
-
-        if ref_pos[2] > half:
-            shift[2] -= PBC_BOX_LENGTH
-        elif ref_pos[2] < -half:
-            shift[2] += PBC_BOX_LENGTH
-
-        if shift[0] != 0 or shift[1] != 0 or shift[2] != 0:
-            for i in mol.atom_indices:
-                atoms[i].pos += shift
-
 # minimum image periodic correction - turns the vector into the nearest image vector
 def minimum_image(r_vector):
 
@@ -527,8 +608,8 @@ def update_camera(dt):
 def coulombs_calculations(scale, q1, q2, r, r_hat, i, j):
     F_C = calc_coulombs(q1, q2, r, r_hat, COULOMB_CONSTANT)
     coulombs_force_calculated = scale*F_C
-    atoms[i].force += coulombs_force_calculated                      # Newtons third law - apply to both atoms
-    atoms[j].force -= coulombs_force_calculated
+    forces[i] += coulombs_force_calculated                      # Newtons third law - apply to both atoms
+    forces[j] -= coulombs_force_calculated
     global pot_e_total
 
     global real_space_PE
@@ -547,8 +628,8 @@ def coulombs_calculations(scale, q1, q2, r, r_hat, i, j):
 
 def LJ_calculations(r, r_hat, scale, LJ_energy_shift, i, j):
     LJ_force_calculated = scale * calc_LJ_force(r, r_hat)
-    atoms[i].force += LJ_force_calculated                      # Newtons third law - apply to both atoms
-    atoms[j].force -= LJ_force_calculated
+    forces[i] += LJ_force_calculated                      # Newtons third law - apply to both atoms
+    forces[j] -= LJ_force_calculated
     global pot_e_total
     pot_e_total += scale * (4 * LJ_EPSILON * ((LJ_SIGMA / r)**12 - (LJ_SIGMA / r)**6) - LJ_energy_shift) # add the LJ potential energy on
 
@@ -561,15 +642,15 @@ def build_neighbour_lists(neighbour_cutoff):
     cells = build_cell_list()
 
     for i, atom in enumerate(atoms):  
-        my_cell = find_cell_of_atom(atom.pos)
+        my_cell = find_cell_of_atom(positions[i])
 
         for cell in neighbouring_cells(my_cell):
             for j in cells.get(cell, ()):
                 if j <= i:
                     continue
 
-                r_vec = minimum_image(atoms[j].pos - atoms[i].pos)
-                r2 = np.dot(r_vec, r_vec)                          # distance between pairs without square rooting - more efficient
+                r_vec = system.minimum_image(positions[j] - positions[i])
+                r2 = cp.dot(r_vec, r_vec)                          # distance between pairs without square rooting - more efficient
 
                 if r2 > cutoff2:
                     continue
@@ -578,8 +659,7 @@ def build_neighbour_lists(neighbour_cutoff):
                 atoms[j].neighbours.append(i)
 
     # update the new last neighbour refference for each atom
-    for atom in atoms:
-        atom.last_neighbour_reference = np.copy(atom.pos)
+    last_neighbour_reference[:] = positions
 
 NUM_CELLS = max(3, int(PBC_BOX_LENGTH // CELL_SIZE))
 
@@ -595,7 +675,7 @@ def build_cell_list():
     cells = {}
 
     for i, atom in enumerate(atoms):
-        cell = find_cell_of_atom(atom.pos)
+        cell = find_cell_of_atom(positions[i])
 
         if cell not in cells:
             cells[cell] = []
@@ -644,8 +724,8 @@ def bspline(n, u):
 
 def compute_theta(f):
 
-    theta = np.zeros(BSPLINE_ORDER)
-    dtheta = np.zeros(BSPLINE_ORDER)
+    theta = cp.zeros(BSPLINE_ORDER)
+    dtheta = cp.zeros(BSPLINE_ORDER)
 
     for i in range(BSPLINE_ORDER):
 
@@ -661,9 +741,8 @@ def build_charge_grid():
     rho.fill(0.0)
     spline_order = 4
 
-    for atom in atoms:
-
-        gx, gy, gz = position_to_mesh(atom.pos)
+    for i in range(no_balls):
+        gx, gy, gz = position_to_mesh(positions[i])
 
         # Lower-left grid point
         ix = math.floor(gx)
@@ -696,7 +775,7 @@ def build_charge_grid():
                         (ix + dx) % PME_GRID,
                         (iy + dy) % PME_GRID,
                         (iz + dz) % PME_GRID
-                    ] += atom.charge * wx * wy * wz
+                    ] += charges[i] * wx * wy * wz
 
     return rho
 
@@ -704,7 +783,7 @@ def build_reciprocal_kernel():
 
     global C
 
-    C = np.zeros(
+    C = cp.zeros(
         (PME_GRID, PME_GRID, PME_GRID),
         dtype=float
     )
@@ -742,7 +821,7 @@ def build_reciprocal_kernel():
                 )
 
                 C[i,j,k] = (
-                    np.exp(
+                    cp.exp(
                         -(math.pi**2)*k2/(PME_ALPHA**2)
                     )
                     /
@@ -768,7 +847,7 @@ def b_factor(m):
         total += (
             bspline(BSPLINE_ORDER, k + 1)
             *
-            np.exp(
+            cp.exp(
                 -2j * math.pi * m * k / PME_GRID
             )
         )
@@ -776,7 +855,7 @@ def b_factor(m):
     if abs(total) < 1e-12:
         return 0.0
 
-    phase = np.exp(
+    phase = cp.exp(
         -2j * math.pi * (BSPLINE_ORDER-1) * m / PME_GRID
     )
 
@@ -788,7 +867,7 @@ def build_B():
 
     global B
 
-    B = np.zeros(
+    B = cp.zeros(
         (PME_GRID, PME_GRID, PME_GRID),
         dtype=float
     )
@@ -843,9 +922,8 @@ def reciprocal_interpolation(potential):
 
     scale = PME_GRID / PBC_BOX_LENGTH
 
-    for atom in atoms:
-
-        gx, gy, gz = position_to_mesh(atom.pos)
+    for i in range(no_balls):
+        gx, gy, gz = position_to_mesh(positions[i])
 
         ix = math.floor(gx)
         iy = math.floor(gy)
@@ -896,15 +974,15 @@ def reciprocal_interpolation(potential):
         global pot_e_total
         global reciprocal_PE
 
-        energy = 0.5 * COULOMB_CONSTANT * atom.charge * Phi
+        energy = 0.5 * COULOMB_CONSTANT * charges[i] * Phi
 
         reciprocal_PE += energy
         pot_e_total += energy
 
-        Fx = COULOMB_CONSTANT * atom.charge * scale * dPhidx
-        Fy = COULOMB_CONSTANT * atom.charge * scale * dPhidy
-        Fz = COULOMB_CONSTANT * atom.charge * scale * dPhidz
-        atom.force -= np.array([Fx, Fy, Fz], dtype=np.float64)
+        Fx = COULOMB_CONSTANT * charges[i] * scale * dPhidx
+        Fy = COULOMB_CONSTANT * charges[i] * scale * dPhidy
+        Fz = COULOMB_CONSTANT * charges[i] * scale * dPhidz
+        forces[i] -= cp.array([Fx, Fy, Fz], dtype=cp.float64)
 
 def coulomb_exclusion_correction(q1, q2, r, r_hat, i, j):
     global pot_e_total, real_space_PE
@@ -918,8 +996,8 @@ def coulomb_exclusion_correction(q1, q2, r, r_hat, i, j):
         erf_term / (r * r) - (2.0 * PME_ALPHA / math.sqrt(math.pi)) * exp_term / r
     )
     F = force_mag * r_hat
-    atoms[i].force += F
-    atoms[j].force -= F
+    forces[i] += F
+    forces[j] -= F
 
     energy = -COULOMB_CONSTANT * q1 * q2 * erf_term / r
     real_space_PE += energy
@@ -927,19 +1005,19 @@ def coulomb_exclusion_correction(q1, q2, r, r_hat, i, j):
 
 def apply_exclusion_corrections():
     for (i, j) in bonded_12 | bonded_13:
-        r_vec = minimum_image(atoms[j].pos - atoms[i].pos)
-        r = np.linalg.norm(r_vec)
+        r_vec = system.minimum_image(positions[j] - positions[i])
+        r = cp.linalg.norm(r_vec)
         if r < 1e-12:
             continue
         r_hat = r_vec / r
-        q1 = float(atoms[i].charge)
-        q2 = float(atoms[j].charge)
+        q1 = float(charges[i])
+        q2 = float(charges[j])
         coulomb_exclusion_correction(q1, q2, r, r_hat, i, j)
 
 PME_SELF_ENERGY = 0.0
 
-for atom in atoms:
-    PME_SELF_ENERGY += atom.charge * atom.charge
+for i in range(no_balls):
+    PME_SELF_ENERGY += charges[i] * charges[i]
 
 PME_SELF_ENERGY *= (
     -COULOMB_CONSTANT
@@ -971,12 +1049,12 @@ def non_bonded_forces():
                 LJ_scale = 1                        # normal non-bonded forces on all other atoms
                 coulomb_scale = 1
 
-            r_vec = minimum_image(atoms[j].pos - atoms[i].pos)     # find pair distances and update the "ghost molecules" 
-            r = np.linalg.norm(r_vec)
-            r_hat = r_vec / np.linalg.norm(r_vec)
+            r_vec = system.minimum_image(positions[j] - positions[i])     # find pair distances and update the "ghost molecules" 
+            r = cp.linalg.norm(r_vec)
+            r_hat = r_vec / cp.linalg.norm(r_vec)
 
-            q1 = float(atoms[i].charge)             # get atom charges               
-            q2 = float(atoms[j].charge)
+            q1 = float(charges[i])             # get atom charges               
+            q2 = float(charges[j])
 
             if r < 1e-12:
                 continue
@@ -993,6 +1071,9 @@ def calc_physics():
 
     global pot_e_total
     pot_e_total = 0.0
+    bond_e = 0
+    angle_e = 0
+    torsion_e = 0
 
     global real_space_PE
     global reciprocal_PE
@@ -1004,24 +1085,26 @@ def calc_physics():
 
     start_bonds = time.perf_counter()
     # bond forces - from py file
-    bond_forces(system)
+    bond_e = bond_forces(system)
     end_bonds = time.perf_counter()
     global time_taken_bonds
     time_taken_bonds += end_bonds - start_bonds
 
     start_bond_angles = time.perf_counter()
     # bond angles
-    angle_forces(system)
+    angle_e = angle_forces(system)
     end_bond_angles = time.perf_counter()
     global time_taken_bond_angles
     time_taken_bond_angles += end_bond_angles - start_bond_angles
 
     start_torsions = time.perf_counter()
     # torsion angles
-    torsion_forces(system)
+    torsion_e = torsion_forces(system)
     end_torsions = time.perf_counter()
     global time_taken_torsions
     time_taken_torsions += end_torsions - start_torsions
+
+    pot_e_total += bond_e + angle_e + torsion_e
 
     start_LJ = time.perf_counter()
     # #LJ forces and Coulombs (non bonded loop)
@@ -1041,10 +1124,10 @@ def calc_physics():
 
     rho = build_charge_grid()
 
-    Qk = np.fft.fftn(rho)
+    Qk = cp.fft.fftn(rho)
     Qk *= BC
 
-    potential = np.fft.ifftn(Qk).real
+    potential = cp.fft.ifftn(Qk).real
     potential *= PME_GRID**3
 
     reciprocal_interpolation(potential)
@@ -1066,124 +1149,6 @@ def calc_physics():
     return pot_e_total                                
 
 
-def debug_system(step):
-
-    # Smallest atom-atom separation
-    min_r = 1e9
-
-    # Largest force
-    max_force = 0.0
-
-    # Largest velocity
-    max_vel = 0.0
-
-    for atom in atoms:
-
-        # velocity
-        v = np.linalg.norm(atom.vel)
-        if v > max_vel:
-            max_vel = v
-
-        # force
-        f = np.linalg.norm(atom.force)
-        if f > max_force:
-            max_force = f
-
-    # Largest force pair
-    largest_force = 0.0
-    largest_pair = None
-
-    for i, atom in enumerate(atoms):
-
-        for j in atom.neighbours:
-
-            if j <= i:
-                continue
-
-            pair = tuple(sorted((i, j)))
-
-            # Ignore bonded pairs
-            if pair in bonded_12:
-                continue
-
-            r_vec = minimum_image(atoms[j].pos - atoms[i].pos)
-            r = np.linalg.norm(r_vec)
-
-            if r < 1e-12:
-                continue
-
-            r_hat = r_vec / r
-
-            # LJ contribution
-            F_LJ = np.zeros(3)
-            if r <= LJ_CUTOFF:
-                F_LJ = calc_LJ_force(r, r_hat)
-
-            # Real-space Coulomb contribution
-            F_C = np.zeros(3)
-            if r <= REAL_CUTOFF:
-                F_C = calc_coulombs(
-                    atoms[i].charge,
-                    atoms[j].charge,
-                    r,
-                    r_hat,
-                    COULOMB_CONSTANT
-                )
-
-            F = F_LJ + F_C
-            Fmag = np.linalg.norm(F)
-
-            if Fmag > largest_force:
-                largest_force = Fmag
-                largest_pair = (
-                    i,
-                    j,
-                    r,
-                    atoms[i].charge,
-                    atoms[j].charge,
-                    F_LJ,
-                    F_C
-                )
-
-    print("\nLargest pair:")
-    print(largest_pair)
-    print("Largest force =", largest_force)
-
-
-
-    min_r = 1e9
-    min_pair = None
-
-    for i in range(len(atoms)-1):
-
-        for j in range(i+1, len(atoms)):
-
-            pair = tuple(sorted((i,j)))
-
-            if pair in bonded_12 or pair in bonded_13:
-                continue
-
-            r_vec = minimum_image(atoms[j].pos - atoms[i].pos)
-            r = np.linalg.norm(r_vec)
-
-            if r < min_r:
-                min_r = r
-                min_pair = (i, j, atoms[i].element, atoms[j].element)
-
-    print("Minimum pair:", min_pair)
-    print("Distance:", min_r)
-
-    print(
-        f"{step:6d} | "
-        f"rmin={min_r:.4f} | "
-        f"Fmax={max_force:.2f} | "
-        f"Vmax={max_vel:.3f} | "
-        f"Real={real_space_PE:.4f} | "
-        f"Recip={reciprocal_PE:.4f} | "
-        f"Total={total_e:.6f}"
-    )
-
-
 # Main light (camera light)
 cam_light = local_light(
     pos=scene.camera.pos - scene.camera.axis.norm()*4,
@@ -1191,16 +1156,15 @@ cam_light = local_light(
 )
 
 # initial forces and model and neighbour list before simulation starts - need valid forces before starting
-for atom in atoms:
-    atom.force.fill(0.0)
+forces.fill(0)
 pot_e = calc_physics()
 render_initial_model()
 build_neighbour_lists(NEIGHBOUR_CUTOFF)
 
 step = 0
 prev_step_count = 0
-relax_steps = 4000
-timestep_x = 100
+relax_steps = 2000
+timestep_x = 1
 average_total_energy = 0
 max_displacement2 = 0
 
@@ -1211,31 +1175,31 @@ while True:
     update_camera(TIME_STEP)
     
     # lighting position for camera
-    cam_light.pos = scene.camera.pos - scene.camera.axis.norm()*3
+    cam_light.index = scene.camera.pos - scene.camera.axis.norm()*3
     
     # Verlet integration method:
     # 1. half-step velocity update
     for i in range(no_balls):
-        atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * TIME_STEP     # first half-step velocity update - uses current force to push velocity halfway forward
+        velocities[i] += 0.5 * (forces[i] / masses[i]) * TIME_STEP     # first half-step velocity update - uses current force to push velocity halfway forward
 
 
     # 2. position update
     for i in range(no_balls):
-        atoms[i].pos += atoms[i].vel * TIME_STEP                      # update pos
+        positions[i] += velocities[i] * TIME_STEP                      # update pos
 
     # 3. wrap positions back into box
-    wrap_molecules()
+    system.wrap_molecules()
 
     # 4. reset forces
     for i in range(no_balls):
-        atoms[i].force = np.zeros(3, dtype=np.float64)                             # clear old forces before computing new ones
+        forces[i] = cp.zeros(3, dtype=cp.float64)                             # clear old forces before computing new ones
 
     # 5. compute new forces
     pot_e = calc_physics()                                           # now get new forces at the new positions
 
     # 6. second half-step velocity update
     for i in range(no_balls):
-        atoms[i].vel += 0.5 * (atoms[i].force / atoms[i].mass) * TIME_STEP     # compleate  the full velocity update using the new forces
+        velocities[i] += 0.5 * (forces[i] / masses[i]) * TIME_STEP     # compleate  the full velocity update using the new forces
 
     # 7. dampen starting strains - ensures the system is calm so it doesent blow up to begin with
 
@@ -1249,7 +1213,7 @@ while True:
         damping = 1                                             # no more dampening
         
     for i in range(no_balls):
-        atoms[i].vel *= damping                                 # dampens some of the velocity at each step when begining
+        velocities[i] *= damping                                 # dampens some of the velocity at each step when begining
 
     k_e = calc_KE()                                             # energy tracking
     total_e = k_e + pot_e
@@ -1261,9 +1225,9 @@ while True:
 
     # find the displacement of the atom this timestep
     for atom in atoms:
-        disp2 = minimum_image(atom.pos - atom.last_neighbour_reference)
+        disp2 = system.minimum_image(positions[atom.index] - last_neighbour_reference[atom.index])
 
-        displacement2 = np.dot(disp2,disp2)
+        displacement2 = cp.dot(disp2,disp2)
 
         if displacement2 > max_displacement2:
             max_displacement2 = displacement2
@@ -1280,11 +1244,11 @@ while True:
 
     # update graphics once per frame
     for i in range(no_balls):
-        balls[i].pos = np_to_vec(atoms[i].pos)                                 # moves balls to current pos
+        balls[i].pos = np_to_vec(positions[i])                                 # moves balls to current pos
 
     for idx, bond in enumerate(bonds):                              # update the bond visuals
-        bond_visuals[idx].pos = np_to_vec(atoms[bond.a1].pos)
-        bond_visuals[idx].axis = np_to_vec(atoms[bond.a2].pos - atoms[bond.a1].pos)
+        bond_visuals[idx].pos = np_to_vec(positions[bond.a1])
+        bond_visuals[idx].axis = np_to_vec(positions[bond.a2] - positions[bond.a1])
 
     # ----------------------------
 
@@ -1296,11 +1260,31 @@ while True:
 
     time_other = time_taken_total - (time_taken_graphics + time_taken_all_foces)
 
-    print("reciprocal_PE: ",reciprocal_PE)
-    print("real_space_PE: ",real_space_PE)
-    print(f"Step: {step}")
-    print(f"KE: {k_e:.6f}  PE: {pot_e:.6f}  Total: {total_e:.6f}")
-    print()
+
+
+    t0 = time.perf_counter()
+    rho = build_charge_grid()
+    t1 = time.perf_counter()
+
+    Qk = cp.fft.fftn(rho)
+    t2 = time.perf_counter()
+
+    Qk *= BC
+    t3 = time.perf_counter()
+
+    potential = cp.fft.ifftn(Qk).real
+    t4 = time.perf_counter()
+
+    reciprocal_interpolation(potential)
+    t5 = time.perf_counter()
+
+    print("Grid:", t1-t0)
+    print("FFT:", t2-t1)
+    print("Multiply:", t3-t2)
+    print("IFFT:", t4-t3)
+    print("Interp:", t5-t4)
+
+
 
     # printing and debuging stuff that prints every x timesteps
     if step % timestep_x == 0:
@@ -1308,22 +1292,34 @@ while True:
         steps.append(step)
         avg_sys_energy_values.append(average_total_energy)
 
+
+        '''
         line.set_data(steps, avg_sys_energy_values)
 
-        
         ax.relim()              # Recalculate limits
         ax.autoscale_view()     # Expand axes if needed
         plt.draw()
         plt.pause(0.001)
         average_total_energy = 0
-
-        #debug_system(step)
         '''
+        
         print()
         print(f"Step: {step}")
         print(f"KE: {k_e:.6f}  PE: {pot_e:.6f}  Total: {total_e:.6f}")
         print(f"Time Taken per cycle: {time_taken_total/timestep_x:.6f}s")
         print()
+
+        print(f"Time By % of Graphics: {time_taken_graphics:.6f} s")
+        print(f"Time By % of Bonds: {time_taken_bonds:.6f} s")
+        print(f"Time By % of Bond Angles: {time_taken_bond_angles:.6f} s")
+        print(f"Time By % of Torsions: {time_taken_torsions:.6f} s")
+        print(f"Time By % of LJ: {time_taken_LJ:.6f} s")
+        print(f"Time By % of Coulombs: {time_taken_coulombs:.6f} s")
+        print(f"Time By % of non_bonded: {time_taken_non_bonded:.6f} s")
+        print(f"Time By % of total forces: {time_taken_all_foces:.6f} s")
+        print(f"Time By % of other: {time_other:.6f} s")
+
+        '''
         print(f"Time By % of Graphics: {((time_taken_graphics/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Bonds: {((time_taken_bonds/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Bond Angles: {((time_taken_bond_angles/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")

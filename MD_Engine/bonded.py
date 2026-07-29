@@ -1,49 +1,49 @@
 import math
-import time
-import numpy as np
-from periodic_boundary import minimum_image
+import cupy as cp
 
 
 def bond_forces(system):
+    positions = system.positions
+    forces = system.forces
+    bond_a = system.bond_a
+    bond_b = system.bond_b
+    bond_r0 = system.bond_r0
+    bond_k = system.bond_k
+    bond_e = 0
 
-    atoms = system.atoms
-    bonds = system.bonds
-    global pot_e_tota
-    pot_e_total = system.pot_e_total
-    PBC_BOX_LENGTH = system.PBC_BOX_LENGTH
+    # compute the bond vector and bond lengths
+    r_vec = system.minimum_image_many(positions[bond_b] - positions[bond_a])
+    r = cp.linalg.norm(r_vec, axis=1)
 
+    # avoid dividing by 0
+    valid = r > 1e-12
 
-    for bond in bonds:
-        a = bond.a1
-        b = bond.a2
-        r0 = bond.ideal_dist
-        k = bond.K
+    bond_a = bond_a[valid]
+    bond_b = bond_b[valid]
+    bond_k = bond_k[valid]
+    bond_r0 = bond_r0[valid]
 
-        # compute the bond vector and bond lengths
-        r_vec = minimum_image(atoms[b].pos - atoms[a].pos, PBC_BOX_LENGTH)
-        r = np.linalg.norm(r_vec)
+    r = r[valid]
+    r_vec = r_vec[valid]
 
-        if r < 1e-12:                              # avoid devide by zero just in case
-            continue
+    r_hat = r_vec / r[:,None]               # calc direction
 
-        r_hat = r_vec / r                     # bond direction
+    F_mag = 2 * bond_k * (r - bond_r0)      # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+    F_vec = F_mag[:, None] * r_hat               
 
-        F = 2 * k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+    cp.add.at(forces, bond_a,  F_vec)     # apply Newtons third law - equal and opposite forces
+    cp.add.at(forces, bond_b, -F_vec)
 
+    bond_e = cp.sum(bond_k * (r - bond_r0)**2)                # calc the harmonic bond potential in function 2 type bond
 
-
-        atoms[a].force += F                          # apply Newtons third law - equal and opposite forces
-        atoms[b].force -= F
-
-        pot_e_total += k * (r - r0)**2                # calc the harmonic bond potential in function 2 type bond
+    return bond_e
 
 def angle_forces(system):
 
-    atoms = system.atoms
+    positions = system.positions
+    forces = system.forces
     bond_angles = system.bond_angles
-    global pot_e_total
-    pot_e_total = system.pot_e_total
-    PBC_BOX_LENGTH = system.PBC_BOX_LENGTH
+    angle_e = 0
     
     for angle in bond_angles:
 
@@ -54,19 +54,19 @@ def angle_forces(system):
         atomC = angle.third
         k = angle.k
 
-        BA = atoms[atomA].pos - atoms[atomB].pos                                # find vector of B to A
-        BC = atoms[atomC].pos - atoms[atomB].pos                                # find vector of B to C
+        BA = positions[atomA] - positions[atomB]                                # find vector of B to A
+        BC = positions[atomC] - positions[atomB]                                # find vector of B to C
 
-        BA = minimum_image(BA,PBC_BOX_LENGTH)                                                 # update the coppy vectors
-        BC = minimum_image(BC,PBC_BOX_LENGTH)
+        BA = system.minimum_image(BA)                                                 # update the coppy vectors
+        BC = system.minimum_image(BC)
         
-        r_BA = np.linalg.norm(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
-        r_BC = np.linalg.norm(BC)
+        r_BA = cp.linalg.norm(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
+        r_BC = cp.linalg.norm(BC)
         
         if r_BA < 1e-12 or r_BC < 1e-12:
             continue
         
-        theta_cos = np.dot(BA, BC) / (r_BA * r_BC)                                          # calculate the dot product hrer
+        theta_cos = cp.dot(BA, BC) / (r_BA * r_BC)                                          # calculate the dot product hrer
         theta_cos = max(-1.0, min(1.0, theta_cos))                                      # clamp for safety
         theta = math.acos(theta_cos)                                                    
         angle.theta = theta                                                             # update theta
@@ -83,19 +83,19 @@ def angle_forces(system):
 
         f_b = -(f_a + f_c)                                                      # force to be applied on b to conserve energy
     
-        atoms[atomA].force += f_a                                               # update the forces
-        atoms[atomB].force += f_b
-        atoms[atomC].force += f_c
+        forces[atomA] += f_a                                               # update the forces
+        forces[atomB] += f_b
+        forces[atomC] += f_c
 
-        pot_e_total += 0.5 * k * (theta - ideal_ang)**2                # update the potential energy change from the angle
+        angle_e += 0.5 * k * (theta - ideal_ang)**2                # update the potential energy change from the angle
+    return angle_e
 
 def torsion_forces(system):
 
-    atoms = system.atoms
+    positions = system.positions
+    forces = system.forces
     torsion_angles = system.torsion_angles
-    global pot_e_total
-    pot_e_total = system.pot_e_total
-    PBC_BOX_LENGTH = system.PBC_BOX_LENGTH
+    torsion_e = 0
     
     for angle in torsion_angles:
         a1 = angle.a1                           # 4 atoms involved in the torsion bond
@@ -104,55 +104,53 @@ def torsion_forces(system):
         a4 = angle.a4
 
 
-        b1 = atoms[a2].pos - atoms[a1].pos      # directions of the three bonds
-        b2 = atoms[a3].pos - atoms[a2].pos
-        b3 = atoms[a4].pos - atoms[a3].pos
+        b1 = positions[a2] - positions[a1]      # directions of the three bonds
+        b2 = positions[a3] - positions[a2]
+        b3 = positions[a4] - positions[a3]
 
-        b1 = minimum_image(b1,PBC_BOX_LENGTH)                 # update the vectors of coppies
-        b2 = minimum_image(b2,PBC_BOX_LENGTH)
-        b3 = minimum_image(b3,PBC_BOX_LENGTH)
+        b1 = system.minimum_image(b1)                 # update the vectors of coppies
+        b2 = system.minimum_image(b2)
+        b3 = system.minimum_image(b3)
 
-        n1 = np.cross(b1, b2)                      # normal to plane ABC
-        n2 = np.cross(b2, b3)                      # normal to plane BCD
+        n1 = cp.cross(b1, b2)                      # normal to plane ABC
+        n2 = cp.cross(b2, b3)                      # normal to plane BCD
 
         eps = 1e-12
-        n1_sq = np.dot(n1, n1)
-        n2_sq = np.dot(n2, n2)
-        b2_sq = np.dot(b2, b2)
-        b2_mag = np.linalg.norm(b2)
+        n1_sq = cp.dot(n1, n1)
+        n2_sq = cp.dot(n2, n2)
+        b2_sq = cp.dot(b2, b2)
+        b2_mag = cp.linalg.norm(b2)
 
         if n1_sq < eps or n2_sq < eps or b2_sq < eps:    # makes sure small values dont blow the system up
             continue
         
-        x = np.dot(n1, n2)
-        y = np.dot(np.cross(n1, n2), b2 / b2_mag)
+        x = cp.dot(n1, n2)
+        y = cp.dot(cp.cross(n1, n2), b2 / b2_mag)
 
         psi = math.atan2(y, x)                  # caluclate current psi angle
         angle.psi = psi 
 
-        torsion_e = 0
         dV_dpsi = 0
         
         for k, n, delta in angle.terms:                             # repeats for each term, updating the cos graph
             torsion_e += k * (1 + math.cos(n * psi - delta))   # calculate the potential energy
             dV_dpsi -= k * n * math.sin(n * psi - delta)            # how strongly the torsion wants to rotate
         
-            
         fa_pref = dV_dpsi * (b2_mag / n1_sq)           # calculates the geometric scallings of the force
         fd_pref = -dV_dpsi * (b2_mag / n2_sq)
 
         f_a = fa_pref * n1                              # aligning the forces with the direction to the plane
         f_d = fd_pref * n2
 
-        c1 = np.dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
-        c2 = np.dot(b3, b2) / b2_sq
+        c1 = cp.dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
+        c2 = cp.dot(b3, b2) / b2_sq
 
         f_b = -(1.0 + c1) * f_a + c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
         f_c = f_c = -(f_a + f_b + f_d)
 
-        atoms[a1].force += f_a                         # apply force to atom a
-        atoms[a2].force += f_b                         # apply force to atom b
-        atoms[a3].force += f_c                         # apply force to atom c
-        atoms[a4].force += f_d                         # apply force to atom d
+        forces[a1] += f_a                         # apply force to atom a
+        forces[a2] += f_b                         # apply force to atom b
+        forces[a3] += f_c                         # apply force to atom c
+        forces[a4] += f_d                         # apply force to atom d
 
-        pot_e_total += torsion_e  # calculate the potential energy
+    return torsion_e
