@@ -32,8 +32,6 @@ class Atom:
 
         props = ELEMENTS[element]
 
-        self.index = index
-
         self.radius = props["radius"]
         self.element = element
         self.base_colour = props["color"]
@@ -45,91 +43,55 @@ class Molecule:
     def __init__(self, atom_indices):
         self.atom_indices = atom_indices
 
-# bonds class
-class Bond:
-    def __init__(self, a1, a2, ideal_dist, K):
-        self.a1 = a1
-        self.a2 = a2
-        self.ideal_dist = ideal_dist
-        self.K = K
-
-#bond angle class
-class BondAngle:
-    def __init__(self, ideal_ang_deg, a1, a2, a3, K):
-        self.ideal_ang = math.radians(ideal_ang_deg)
-        self.a1 = a1
-        self.a2 = a2
-        self.a3 = a3
-        self.K = K
-    
-# torsion angle class
-class TorsionAngle:
-    def __init__(self, a1, a2, a3, a4, terms):
-        self.a1 = a1
-        self.a2 = a2
-        self.a3 = a3
-        self.a4 = a4
-        self.psi = 0.0
-        self.terms = []
-        
-        # create structure for having more than one term for 3-term torsion equations
-        for k, n, delta_deg in terms:
-            self.terms.append((k, n, math.radians(delta_deg)))
-
 class System:
     def __init__(self):
 
         # Dynamic state
-        self.positions = None
-        self.velocities = None
-        self.forces = None
+        self.positions = []
+        self.velocities = []
+        self.forces = []
 
         # Constant per-atom data
-        self.masses = None
-        self.charges = None
+        self.masses = []
+        self.charges = []
 
         # Topology
         self.atoms = []
         self.molecules = []
-        self.bonds = []
-        self.bond_angles = []
-        self.torsion_angles = []
+        self.n_atoms = 0
 
         # Bonds
-        self.bond_a = None
-        self.bond_b = None
-        self.bond_r0 = None
-        self.bond_k = None
+        self.bond_a = []
+        self.bond_b = []
+        self.bond_r0 = []
+        self.bond_k = []
 
         # Angles
 
-        self.angle_i = None
-        self.angle_j = None
-        self.angle_k = None
-        self.angle_theta0 = None
-        self.angle_kconst = None
+        self.angle_i = []
+        self.angle_j = []
+        self.angle_k = []
+        self.angle_theta0 = []
+        self.angle_kconst = []
 
         # Torsions
 
-        self.torsion_i = None
-        self.torsion_j = None
-        self.torsion_k = None
-        self.torsion_l = None
-        self.torsion_terms = None
+        self.torsion_i = []
+        self.torsion_j = []
+        self.torsion_k = []
+        self.torsion_l = []
+        self.torsion_terms = []
+
+system = System()
 
 
 # molecule properties arrays
-atoms = []
 balls = []
-bonds = []
-bond_angles = []
-torsion_angles = []
 bond_visuals = []
 
 real_space_PE = 0.0
 reciprocal_PE = 0.0
 
-molecules = []
 
 # simulation pararmeters
 pot_e = 0
@@ -230,16 +192,17 @@ def keyup(evt):
 
 def render_initial_model():
     # create balls
-    for i, a in enumerate(atoms):
-        b = sphere(pos=vector(*positions[i]), radius=a.radius, color=a.base_colour, make_trail=False)
+    for i, a in enumerate(system.atoms):
+        b = sphere(pos=vector(*system.positions[i]), radius=a.radius, color=a.base_colour, make_trail=False)
         balls.append(b)
 
     # Draw lines between bonds
-    for bond in system.bonds:
-
+    for bond_index in range(len(system.bond_a)):
+        a1 = system.bond_a[bond_index]
+        a2 = system.bond_b[bond_index]
         c = cylinder(
-            pos=vector(*positions[bond.a1]),
-            axis=vector(*positions[bond.a2]) - vector(*positions[bond.a1]),
+            pos=vector(*system.positions[a1]),
+            axis=vector(*system.positions[a2]) - vector(*system.positions[a1]),
             radius=0.01,
             color=vector(1,1,1)
         )
@@ -304,16 +267,16 @@ def insert_molecule(template):
     )
 
 # First new atom index
-    atom_offset = len(atoms)
+    atom_offset = len(system.atoms)
 
     atom_indices = []
 
     # Create atoms
     for pos, charge, atom_type_name in zip(atom_pos,atom_charge,atom_type):
 
-        index = len(atoms)
+        index = len(system.atoms)
 
-        atoms.append(
+        system.atoms.append(
             Atom(
                 index,
                 atom_type_name
@@ -322,65 +285,68 @@ def insert_molecule(template):
 
         new_pos = pos + offset_position
 
-        position_list.append([
-            new_pos.x,
-            new_pos.y,
-            new_pos.z
+        system.positions.append([
+        new_pos.x,
+        new_pos.y,
+        new_pos.z
+    ])
+
+        system.velocities.append([
+            0.0,
+            0.0,
+            0.0
         ])
 
-        velocity_list.append([0.0, 0.0, 0.0])
-        force_list.append([0.0, 0.0, 0.0])
+        system.forces.append([
+            0.0,
+            0.0,
+            0.0
+        ])
 
-        charge_list.append(float(charge))
-        mass_list.append(ELEMENTS[atom_type_name]["mass"])
+        system.charges.append(float(charge))
 
-        atom_indices.append(len(atoms)-1)
+        system.masses.append(
+            ELEMENTS[atom_type_name]["mass"]
+        )
 
-    molecules.append(Molecule(atom_indices))
+        atom_indices.append(len(system.atoms)-1)
+
+    system.molecules.append(Molecule(atom_indices))
 
     # Create bonds
     for a, b, r0, k in bond_data:
 
-        bonds.append(
-            Bond(
-                a + atom_offset,
-                b + atom_offset,
-                r0,
-                k
-            )
-        )
+        system.bond_a.append(a + atom_offset)
+        system.bond_b.append(b + atom_offset)
+        system.bond_r0.append(r0)
+        system.bond_k.append(k)
 
     # Create angles
     for i, j, k, theta0, k_theta in angle_data:
 
-        bond_angles.append(
-            BondAngle(
-                theta0,
-                i + atom_offset,
-                j + atom_offset,
-                k + atom_offset,
-                k_theta
-            )
-        )
+        system.angle_i.append(i + atom_offset)
+        system.angle_j.append(j + atom_offset)
+        system.angle_k.append(k + atom_offset)
+
+        system.angle_theta0.append(math.radians(theta0))
+
+        system.angle_kconst.append(k_theta)
 
     # Create torsions
     for i, j, k, l, k_dih, n, phase in torsion_data:
 
-        torsion_angles.append(
-            TorsionAngle(
-                i + atom_offset,
-                j + atom_offset,
-                k + atom_offset,
-                l + atom_offset,
-                [(k_dih, n, phase)]
-            )
-        )
+        system.torsion_i.append(i + atom_offset)
+        system.torsion_j.append(j + atom_offset)
+        system.torsion_k.append(k + atom_offset)
+        system.torsion_l.append(l + atom_offset)
 
-position_list = []
-velocity_list = []
-force_list = []
-charge_list = []
-mass_list = []
+        system.torsion_terms.append([
+            (k_dih,
+            n,
+            math.radians(phase))
+        ])
+
+
 
 #create test molecules
 
@@ -389,144 +355,56 @@ water = load_molecule_template()
 for i in range(MOLECULE_NUMBERS):
     insert_molecule(water)
 
-# create number of atoms after all atoms have been made
-no_balls = len(atoms)
 # create NumPy Vectors
-
-positions = np.zeros((no_balls,3), dtype=np.float64)
-velocities = np.zeros((no_balls,3), dtype=np.float64)
-forces = np.zeros((no_balls,3), dtype=np.float64)
-
-charges = np.zeros(no_balls)
-masses = np.zeros(no_balls)
-
-positions = np.asarray(position_list, dtype=np.float64)
-velocities = np.asarray(velocity_list, dtype=np.float64)
-forces = np.asarray(force_list, dtype=np.float64)
-
-charges = np.asarray(charge_list, dtype=np.float64)
-masses = np.asarray(mass_list, dtype=np.float64)
-
-
-
-# Bonds
-bond_a = np.asarray(
-    [bond.a1 for bond in bonds],
-    dtype=np.int32
-)
-
-bond_b = np.asarray(
-    [bond.a2 for bond in bonds],
-    dtype=np.int32
-)
-
-bond_r0 = np.asarray(
-    [bond.ideal_dist for bond in bonds],
+system.positions = np.asarray(
+    system.positions,
     dtype=np.float64
 )
 
-bond_k = np.asarray(
-    [bond.K for bond in bonds],
+system.velocities = np.asarray(
+    system.velocities,
     dtype=np.float64
 )
 
-# Bond Angles
-angle_i = np.asarray(
-    [bond_angle.a1 for bond_angle in bond_angles],
-    dtype=np.int32
-)
-
-angle_j = np.asarray(
-    [bond_angle.a2 for bond_angle in bond_angles],
-    dtype=np.int32
-)
-
-angle_k = np.asarray(
-    [bond_angle.a3 for bond_angle in bond_angles],
-    dtype=np.int32
-)
-
-angle_theta0 = np.asarray(
-    [bond_angle.ideal_ang for bond_angle in bond_angles],
+system.forces = np.asarray(
+    system.forces,
     dtype=np.float64
 )
 
-angle_kconst = np.asarray(
-    [bond_angle.K for bond_angle in bond_angles],
+system.charges = np.asarray(
+    system.charges,
     dtype=np.float64
 )
 
-
-# Torsion Angles
-torsion_i = np.asarray(
-    [bond_angle.a1 for bond_angle in torsion_angles],
-    dtype=np.int32
-)
-
-torsion_j = np.asarray(
-    [bond_angle.a2 for bond_angle in torsion_angles],
-    dtype=np.int32
-)
-
-torsion_k = np.asarray(
-    [bond_angle.a3 for bond_angle in torsion_angles],
-    dtype=np.int32
-)
-
-torsion_l = np.asarray(
-    [bond_angle.a4 for bond_angle in torsion_angles],
-    dtype=np.int32
-)
-
-torsion_psi = np.asarray(
-    [bond_angle.psi for bond_angle in torsion_angles],
+system.masses = np.asarray(
+    system.masses,
     dtype=np.float64
 )
-
-torsion_terms = np.asarray(
-    [bond_angle.terms for bond_angle in torsion_angles],
-    dtype=np.float64
-)
-
-
-
-system = System()
-
-system.positions = positions
-system.velocities = velocities
-system.forces = forces
-
-# Constant per-atom data
-system.masses = masses
-system.charges = charges
 
 # Topology
-system.atoms = atoms
-system.molecules = molecules
-system.bonds = bonds
-system.bond_angles = bond_angles
-system.torsion_angles = torsion_angles
+system.n_atoms = len(system.positions)
 
 # Bonds
-system.bond_a = bond_a
-system.bond_b = bond_b
-system.bond_r0 = bond_r0
-system.bond_k = bond_k
+system.bond_a = np.asarray(system.bond_a, dtype=np.int32)
+system.bond_b = np.asarray(system.bond_b, dtype=np.int32)
+
+system.bond_r0 = np.asarray(system.bond_r0, dtype=np.float64)
+system.bond_k = np.asarray(system.bond_k, dtype=np.float64)
 
 # Angles
-system.angle_i = angle_i
-system.angle_j = angle_j
-system.angle_k = angle_k
-system.angle_theta0 = angle_theta0
-system.angle_kconst = angle_kconst
+system.angle_i = np.asarray(system.angle_i, dtype=np.int32)
+system.angle_j = np.asarray(system.angle_j, dtype=np.int32)
+system.angle_k = np.asarray(system.angle_k, dtype=np.int32)
+system.angle_theta0 = np.asarray(system.angle_theta0, dtype=np.float64)
+system.angle_kconst = np.asarray(system.angle_kconst, dtype=np.float64)
 
 # Torsions
 
-system.torsion_i = torsion_i
-system.torsion_j = torsion_j
-system.torsion_k = torsion_k
-system.torsion_l = torsion_l
-system.terms = torsion_terms
+system.torsion_i = np.asarray(system.torsion_i, dtype=np.int32)
+system.torsion_j = np.asarray(system.torsion_j, dtype=np.int32)
+system.torsion_k = np.asarray(system.torsion_k, dtype=np.int32)
+system.torsion_l = np.asarray(system.torsion_l, dtype=np.int32)
+system.torsion_terms = system.torsion_terms
 
 # Lennard Jones Force Equation (VDW's)
 def calc_LJ_force(dist, direction):
@@ -535,7 +413,7 @@ def calc_LJ_force(dist, direction):
 # calc Kintetic energy of particles
 def calc_KE(system):
     k_e = 0
-    for i in range(no_balls): 
+    for i in range(system.n_atoms): 
         k_e = k_e + (0.5*system.masses[i]*(np.dot(system.velocities[i], system.velocities[i]))) # use dot product as v^2 to calc ke
     return k_e
 
@@ -565,10 +443,12 @@ def calc_coulombs(q1, q2, r, direction, k):
 
 # builds the neibour list structure
 def build_neighbours():
-    neighbours = {i: set() for i in range(no_balls)}        # set makes sure no duplicates and fast to check
-    for bond in system.bonds:
-        neighbours[bond.a1].add(bond.a2)                    # bonding works both ways so adds the bond to the specific atom you are looking at at the moment
-        neighbours[bond.a2].add(bond.a1)
+    neighbours = {i: set() for i in range(system.n_atoms)}        # set makes sure no duplicates and fast to check
+    for bond_index in range(len(system.bond_a)):
+        a1 = system.bond_a[bond_index]
+        a2 = system.bond_b[bond_index]
+        neighbours[a1].add(a2)                    # bonding works both ways so adds the bond to the specific atom you are looking at at the moment
+        neighbours[a2].add(a1)
 
     return neighbours
 
@@ -718,7 +598,7 @@ def build_neighbour_lists(system, neighbour_cutoff):
 
     cells = build_cell_list(system)
 
-    for i in range(no_balls):  
+    for i in range(system.n_atoms):  
         my_cell = find_cell_of_atom(system.positions[i])
 
         for cell in neighbouring_cells(my_cell):
@@ -732,8 +612,8 @@ def build_neighbour_lists(system, neighbour_cutoff):
                 if r2 > cutoff2:
                     continue
                 
-                atoms[i].neighbours.append(j)
-                atoms[j].neighbours.append(i)
+                system.atoms[i].neighbours.append(j)
+                system.atoms[j].neighbours.append(i)
 
     # update the new last neighbour refference for each atom
     for i, atom in enumerate(system.atoms):
@@ -750,7 +630,7 @@ def find_cell_of_atom(atom_pos):
 def build_cell_list(system):
     cells = {}
 
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         cell = find_cell_of_atom(system.positions[i])
 
         if cell not in cells:
@@ -817,7 +697,7 @@ def build_charge_grid(system):
     rho.fill(0.0)
     spline_order = 4
 
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
 
         gx, gy, gz = position_to_mesh(system.positions[i])
 
@@ -999,7 +879,7 @@ def reciprocal_interpolation(system, potential):
 
     scale = PME_GRID / PBC_BOX_LENGTH
 
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
 
         gx, gy, gz = position_to_mesh(system.positions[i])
 
@@ -1162,7 +1042,6 @@ def angle_forces(system):
         theta_cos = (np.dot(BA, BC))/(r_BA*r_BC)                                           # calculate the dot product hrer
         theta_cos = max(-1.0, min(1.0, theta_cos))                                      # clamp for safety
         theta = math.acos(theta_cos)                                                    
-        theta = theta                                                             # update theta
 
         sin_theta = math.sin(theta)                                                     # to not divide by zero
         if abs(sin_theta) < 1e-8:
@@ -1195,7 +1074,6 @@ def torsion_forces(system):
         a2 = system.torsion_j[i] 
         a3 = system.torsion_k[i]
         a4 = system.torsion_l[i]
-        psi = system.psi[i]
 
 
         b1 = system.positions[a2] - system.positions[a1]      # directions of the three bonds
@@ -1226,7 +1104,7 @@ def torsion_forces(system):
         torsion_e = 0
         dV_dpsi = 0
         
-        for k, n, delta in system.torsion_terms:                             # repeats for each term, updating the cos graph
+        for k, n, delta in system.torsion_terms[i]:                             # repeats for each term, updating the cos graph
             torsion_e += k * (1 + math.cos(n * psi - delta))   # calculate the potential energy
             dV_dpsi -= k * n * math.sin(n * psi - delta)            # how strongly the torsion wants to rotate
         
@@ -1241,7 +1119,7 @@ def torsion_forces(system):
         c2 = np.dot(b3, b2) / b2_sq
 
         f_b = -(1.0 + c1) * f_a + c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
-        f_c = f_c = -(f_a + f_b + f_d)
+        f_c = -(f_a + f_b + f_d)
 
         system.forces[a1] += f_a                         # apply force to atom a
         system.forces[a2] += f_b                         # apply force to atom b
@@ -1369,15 +1247,14 @@ cam_light = local_light(
 )
 
 # initial forces and model and neighbour list before simulation starts - need valid forces before starting
-for i in range(no_balls):
-    forces.fill(0.0)
+system.forces.fill(0.0)
 pot_e = calc_physics()
 render_initial_model()
 build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
 
 step = 0
 prev_step_count = 0
-relax_steps = 2000
+relax_steps = 4000
 timestep_x = 100
 average_total_energy = 0
 max_displacement2 = 0
@@ -1393,25 +1270,24 @@ while True:
     
     # Verlet integration method:
     # 1. half-step velocity update
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         system.velocities[i] += 0.5 * (system.forces[i] /system.masses[i]) * TIME_STEP     # first half-step velocity update - uses current force to push velocity halfway forward
 
     # 2. position update
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         system.positions[i] += system.velocities[i] * TIME_STEP                      # update pos
 
     # 3. wrap positions back into box
     wrap_molecules(system)
 
     # 4. reset forces
-    for i in range(no_balls):
-        forces.fill(0.0)                             # clear old forces before computing new ones
+    system.forces.fill(0.0)                             # clear old forces before computing new ones
 
     # 5. compute new forces
     pot_e = calc_physics()                                           # now get new forces at the new positions
 
     # 6. second half-step velocity update
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         system.velocities[i] += 0.5 * (system.forces[i] / system.masses[i]) * TIME_STEP     # compleate  the full velocity update using the new forces
 
     # 7. dampen starting strains - ensures the system is calm so it doesent blow up to begin with
@@ -1425,7 +1301,7 @@ while True:
     else:
         damping = 1                                             # no more dampening
         
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         system.velocities[i] *= damping                                 # dampens some of the velocity at each step when begining
 
     k_e = calc_KE(system)                                             # energy tracking
@@ -1456,14 +1332,16 @@ while True:
     # ----- graphics render  ------
 
     # update graphics once per frame
-    for i in range(no_balls):
+    for i in range(system.n_atoms):
         balls[i].pos = vector(*system.positions[i])                                 # moves balls to current pos
 
-    for idx, bond in enumerate(system.bonds):                              # update the bond visuals
-        bond_visuals[idx].pos = vector(*system.positions[bond.a1])
+    for bond_index in range(len(system.bond_a)):                              # update the bond visuals
+        a1 = system.bond_a[bond_index]
+        a2 = system.bond_b[bond_index]
+        bond_visuals[bond_index].pos = vector(*system.positions[a1])
 
-        bond_visuals[idx].axis = vector(
-            *(system.positions[bond.a2] - system.positions[bond.a1])
+        bond_visuals[bond_index].axis = vector(
+            *(system.positions[a2] - system.positions[a1])
         )
 
     # ----------------------------
@@ -1487,7 +1365,7 @@ while True:
         if step >= (relax_steps+timestep_x):
             average_total_energy = average_total_energy/timestep_x
             steps.append(step)
-            avg_sys_energy_values.append(average_total_energy-initial_total_energy)
+            avg_sys_energy_values.append(average_total_energy)
 
             line.set_data(steps, avg_sys_energy_values)
 
@@ -1498,7 +1376,6 @@ while True:
             plt.pause(0.001)
             average_total_energy = 0
         
-
         print()
         print(f"Step: {step}")
         print(f"KE: {k_e:.6f}  PE: {pot_e:.6f}  Total: {total_e:.6f}")
