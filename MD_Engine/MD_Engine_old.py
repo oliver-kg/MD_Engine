@@ -5,8 +5,9 @@ import read_molecules
 import time
 from random import uniform
 import numpy as np
+import cupy as cp
+from scipy.special import erfc
 import matplotlib.pyplot as plt
-
 # ------------------------
 # Length = nm
 # Mass = amu
@@ -82,6 +83,13 @@ class System:
         self.torsion_l = []
         self.torsion_terms = []
 
+        # Non Bonded loop
+        self.pair_i = np.empty(0, dtype=np.int32)
+        self.pair_j = np.empty(0, dtype=np.int32)
+
+        self.pair_lj_scale = np.empty(0, dtype=np.float64)
+        self.pair_coulomb_scale = np.empty(0, dtype=np.float64)
+
 
     def minimum_image(self, r_vector):
         return r_vector - PBC_BOX_LENGTH * np.round(r_vector / PBC_BOX_LENGTH)
@@ -105,6 +113,7 @@ TIME_STEP = 0.0002
 LJ_SIGMA = 0.3
 LJ_EPSILON = 0.02
 LJ_CUTOFF = 2.5 * LJ_SIGMA                        # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
+LJ_ENERGY_SHIFT = 4 * LJ_EPSILON * ((LJ_SIGMA / LJ_CUTOFF)**12 - (LJ_SIGMA / LJ_CUTOFF)**6) # used so the LJ potential smoothly becomes 0 instead of cutting off
 SKIN_CUTOFF = 0.5
 REAL_CUTOFF = 9.0
 NEIGHBOUR_CUTOFF = SKIN_CUTOFF+REAL_CUTOFF
@@ -582,6 +591,7 @@ def coulombs_calculations(system, scale, q1, q2, r, r_hat, i, j):
 
 def LJ_calculations(system, r, r_hat, scale, LJ_energy_shift, i, j):
     LJ_force_calculated = scale * calc_LJ_force(r, r_hat)
+    print(i, j, r, LJ_force_calculated)
     system.forces[i] += LJ_force_calculated                      # Newtons third law - apply to both atoms
     system.forces[j] -= LJ_force_calculated
     global pot_e_total
@@ -590,8 +600,13 @@ def LJ_calculations(system, r, r_hat, scale, LJ_energy_shift, i, j):
 def build_neighbour_lists(system, neighbour_cutoff):
     cutoff2 = neighbour_cutoff**2
     
-    for atom in system.atoms:
-        atom.neighbours.clear()         # clear out all of the previous neighbour lists
+    # clear out all of the previous neighbour lists
+
+    pair_i = []
+    pair_j = []
+
+    pair_lj_scale = []
+    pair_coulomb_scale = []
 
     cells = build_cell_list(system)
 
@@ -609,12 +624,31 @@ def build_neighbour_lists(system, neighbour_cutoff):
                 if r2 > cutoff2:
                     continue
                 
-                system.atoms[i].neighbours.append(j)
-                system.atoms[j].neighbours.append(i)
+                pair = (i, j)
+
+                if pair in bonded_12 or pair in bonded_13:
+                    continue
+
+                pair_i.append(i)
+                pair_j.append(j)
+
+                if pair in bonded_14:
+                    pair_lj_scale.append(0.5)
+                else:
+                    pair_lj_scale.append(1.0)
+
+                pair_coulomb_scale.append(1.0)
 
     # update the new last neighbour refference for each atom
     for i, atom in enumerate(system.atoms):
         atom.last_neighbour_reference = system.positions[i].copy()
+
+    system.pair_i = np.asarray(pair_i, dtype=np.int32)
+    system.pair_j = np.asarray(pair_j, dtype=np.int32)
+
+    system.pair_lj_scale = np.asarray(pair_lj_scale, dtype=np.float64)
+    system.pair_coulomb_scale = np.asarray(pair_coulomb_scale, dtype=np.float64)
+
 
 def find_cell_of_atom(atom_pos):
     return (
@@ -1208,47 +1242,142 @@ def torsion_forces(system):
     time_taken_torsions += end_torsions - start_torsions
 
 def non_bonded_forces(system):
-    LJ_scale = 1.0
-    coulomb_scale = 1.0
-    LJ_energy_shift = 4 * LJ_EPSILON * ((LJ_SIGMA / LJ_CUTOFF)**12 - (LJ_SIGMA / LJ_CUTOFF)**6) # used so the LJ potential smoothly becomes 0 instead of cutting off
 
-    for i, atom in enumerate(system.atoms):                   # loop over each unique atom pair once
-        for j in atom.neighbours:
+    pair_i = system.pair_i
+    pair_j = system.pair_j
 
-            if j <= i:                                  # makes sure not calculating the same force twice
-                continue
+    ri = system.positions[pair_i]
+    rj = system.positions[pair_j]
 
-            pair = tuple(sorted((i, j)))
+    qi = system.charges[pair_i]
+    qj = system.charges[pair_j]
 
-            if pair in bonded_12 or pair in bonded_13:  # compleately skips 1-2 and 1-3 bonds
-                continue
-            
-            if pair in bonded_14:                   # dapens 1-4 LJ forces
-                LJ_scale = 0.5
-            else:
-                LJ_scale = 1                        # normal non-bonded forces on all other atoms
-                coulomb_scale = 1
+    lj_scale = system.pair_lj_scale
+    coulomb_scale = system.pair_coulomb_scale
 
-            r_vec = system.minimum_image(system.positions[j] - system.positions[i])     # find pair distances and update the "ghost molecules" 
-            r = np.linalg.norm(r_vec)
+    r_vec = system.minimum_image(rj - ri)
 
-            if r < 1e-12:
-                continue
+    r = np.linalg.norm(r_vec, axis=1)
 
-            r_hat = r_vec / r
+    valid = r > 1e-12
 
-            q1 = float(system.charges[i])             # get atom charges               
-            q2 = float(system.charges[j])
+    pair_i = pair_i[valid]
+    pair_j = pair_j[valid]
 
-            # -- add the coulombs back in when adding PME later
+    qi = qi[valid]
+    qj = qj[valid]
 
-            if r > REAL_CUTOFF:             # skip invalid LJ, and only calculate coulomb forces
-                coulombs_calculations(system, coulomb_scale, q1, q2, r, r_hat, i, j)
-                continue
+    lj_scale = lj_scale[valid]
+    coulomb_scale = coulomb_scale[valid]
 
-            else:                                   # dont skip any non bonded forces as pair is in the cutoff region 
-                LJ_calculations(system, r, r_hat, LJ_scale, LJ_energy_shift, i, j)
-                coulombs_calculations(system, coulomb_scale, q1, q2, r, r_hat, i, j)
+    # LJ Force
+
+    r_vec = r_vec[valid]
+    r = r[valid]
+
+    r_hat = r_vec / r[:, None]
+
+    lj_mask = r <= LJ_CUTOFF
+
+    if np.any(lj_mask):
+
+        lj_r = r[lj_mask]
+        lj_hat = r_hat[lj_mask]
+
+        lj_i = pair_i[lj_mask]
+        lj_j = pair_j[lj_mask]
+
+        lj_scale_local = lj_scale[lj_mask]
+
+        inv_r = LJ_SIGMA / lj_r
+
+        sr2 = inv_r * inv_r
+        sr6 = sr2 * sr2 * sr2
+        sr12 = sr6 * sr6
+
+        force_mag = (
+            24.0
+            * LJ_EPSILON
+            * (2.0 * sr12 - sr6)
+            / lj_r
+        )
+
+        force_mag *= lj_scale_local
+
+        F_lj = -force_mag[:, None] * lj_hat
+
+        np.add.at(system.forces, lj_i,  F_lj)
+        np.add.at(system.forces, lj_j, -F_lj)
+
+        U_lj = (
+            4.0
+            * LJ_EPSILON
+            * (sr12 - sr6)
+            - LJ_ENERGY_SHIFT
+        )
+
+        global pot_e_total
+        pot_e_total += np.sum(
+            lj_scale_local * U_lj
+        )
+
+    # Coulomb Force
+
+    real_mask = r <= REAL_CUTOFF
+
+    if np.any(real_mask):
+
+        real_r = r[real_mask]
+        real_hat = r_hat[real_mask]
+
+        real_i = pair_i[real_mask]
+        real_j = pair_j[real_mask]
+
+        q1 = qi[real_mask]
+        q2 = qj[real_mask]
+
+        scale = coulomb_scale[real_mask]
+
+        alpha_r = PME_ALPHA * real_r
+
+        erfc_term = erfc(alpha_r)
+        exp_term = np.exp(-(alpha_r**2))
+
+        force_mag = (
+            COULOMB_CONSTANT
+            * q1
+            * q2
+            * (
+                erfc_term / (real_r**2)
+                +
+                (2.0 * PME_ALPHA / np.sqrt(np.pi))
+                * exp_term
+                / real_r
+            )
+        )
+
+        force_mag *= scale
+
+        F_coul = -force_mag[:, None] * real_hat
+
+        np.add.at(system.forces, real_i, F_coul)
+        np.add.at(system.forces, real_j, -F_coul)
+
+        U_coul = (
+            scale
+            * COULOMB_CONSTANT
+            * q1
+            * q2
+            * erfc_term
+            / real_r
+        )
+
+        energy = np.sum(U_coul)
+
+        global real_space_PE
+        real_space_PE += energy
+        pot_e_total += energy
+
 
 # caculate physics stuff - the heart <3
 def calc_physics():
@@ -1397,6 +1526,7 @@ while True:
         build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
         max_displacement2 = 0
         
+
     start_total_graphics = time.perf_counter() 
 
     # ----- graphics render  ------
