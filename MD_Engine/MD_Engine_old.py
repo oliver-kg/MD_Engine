@@ -82,6 +82,10 @@ class System:
         self.torsion_l = []
         self.torsion_terms = []
 
+
+    def minimum_image(self, r_vector):
+        return r_vector - PBC_BOX_LENGTH * np.round(r_vector / PBC_BOX_LENGTH)
+
 system = System()
 
 
@@ -97,7 +101,7 @@ reciprocal_PE = 0.0
 pot_e = 0
 k_e = 0
 total_e = 0
-TIME_STEP = 0.0004
+TIME_STEP = 0.0002
 LJ_SIGMA = 0.3
 LJ_EPSILON = 0.02
 LJ_CUTOFF = 2.5 * LJ_SIGMA                        # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
@@ -105,7 +109,7 @@ SKIN_CUTOFF = 0.5
 REAL_CUTOFF = 9.0
 NEIGHBOUR_CUTOFF = SKIN_CUTOFF+REAL_CUTOFF
 COULOMB_CONSTANT = 138.935456
-PBC_BOX_LENGTH = 8
+PBC_BOX_LENGTH = 10
 MOLECULE_NUMBERS = 10
 CELL_SIZE = NEIGHBOUR_CUTOFF
 steps = []
@@ -139,8 +143,8 @@ plt.ion()  # Interactive mode
 fig, ax = plt.subplots()
 line, = ax.plot([], [], lw=2)
 ax.set_xlabel("Timestep")
-ax.set_ylabel("Average Relative Error")
-ax.set_title("Average Relative Error (100-step average)")
+ax.set_ylabel("Average Relative Fractional Error")
+ax.set_title("Average Relative Fractional Error (100-step average)")
 ax.grid(True)
 
 # Get screen dimensions
@@ -355,6 +359,7 @@ water = load_molecule_template()
 for i in range(MOLECULE_NUMBERS):
     insert_molecule(water)
 
+
 # create NumPy Vectors
 system.positions = np.asarray(
     system.positions,
@@ -406,16 +411,26 @@ system.torsion_k = np.asarray(system.torsion_k, dtype=np.int32)
 system.torsion_l = np.asarray(system.torsion_l, dtype=np.int32)
 system.torsion_terms = system.torsion_terms
 
+
 # Lennard Jones Force Equation (VDW's)
 def calc_LJ_force(dist, direction):
     return  -((24*LJ_EPSILON*((2*((LJ_SIGMA/dist)**12)) - ((LJ_SIGMA/dist)**6)))*(1/dist))*direction
 
 # calc Kintetic energy of particles
-def calc_KE(system):
+def calc_KE_old(system):
     k_e = 0
     for i in range(system.n_atoms): 
         k_e = k_e + (0.5*system.masses[i]*(np.dot(system.velocities[i], system.velocities[i]))) # use dot product as v^2 to calc ke
     return k_e
+
+def calc_KE(system):
+    speed2 = np.sum(system.velocities**2, axis=1)
+
+    ke_per_atom = 0.5 * system.masses * speed2
+
+    k_e = np.sum(ke_per_atom)
+
+    return k_e 
 
 # calc Coulombs
 def calc_coulombs(q1, q2, r, direction, k):
@@ -514,27 +529,9 @@ def wrap_molecules(system):
                 system.positions[i] += shift
 
 # minimum image periodic correction - turns the vector into the nearest image vector
-def minimum_image(r_vector):                                  
 
-    half = PBC_BOX_LENGTH * 0.5
-    box = PBC_BOX_LENGTH
 
-    if r_vector[0] > half:
-        r_vector[0] -= box
-    elif r_vector[0] < -half:
-        r_vector[0] += box
 
-    if r_vector[1] > half:
-        r_vector[1] -= box
-    elif r_vector[1] < -half:
-        r_vector[1] += box
-
-    if r_vector[2] > half:
-        r_vector[2] -= box
-    elif r_vector[2] < -half:
-        r_vector[2] += box
-
-    return r_vector
 
 # simple camera movement via key press
 def update_camera(dt):
@@ -606,7 +603,7 @@ def build_neighbour_lists(system, neighbour_cutoff):
                 if j <= i:
                     continue
 
-                r_vec = minimum_image(system.positions[j] - system.positions[i])
+                r_vec = system.minimum_image(system.positions[j] - system.positions[i])
                 r2 = np.dot(r_vec, r_vec)                          # distance between pairs without square rooting - more efficient
 
                 if r2 > cutoff2:
@@ -972,7 +969,7 @@ def coulomb_exclusion_correction(system, q1, q2, r, r_hat, i, j):
 
 def apply_exclusion_corrections(system):
     for (i, j) in bonded_12 | bonded_13:
-        r_vec = minimum_image(system.positions[j] - system.positions[i])
+        r_vec = system.minimum_image(system.positions[j] - system.positions[i])
         r = np.linalg.norm(r_vec)
         if r < 1e-12:
             continue
@@ -987,28 +984,34 @@ def apply_exclusion_corrections(system):
 def bond_forces(system):
     start_bonds = time.perf_counter()
 
-    for i in range(len(system.bond_a)):
-        a = system.bond_a[i]
-        b = system.bond_b[i]
-        r0 = system.bond_r0[i]
-        k = system.bond_k[i]
+    a = system.bond_a
+    b = system.bond_b
+    r0 = system.bond_r0
+    k = system.bond_k
 
-        # compute the bond vector and bond lengths
-        r_vec = minimum_image(system.positions[b] - system.positions[a])
-        r = np.linalg.norm(r_vec)
+    # compute the bond vector and bond lengths
+    r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
+    r = np.linalg.norm(r_vec, axis=1)
 
-        if r < 1e-12:                              # avoid devide by zero just in case
-            continue
+    valid = r > 1e-12                              # avoid devide by zero just in case
 
-        r_hat = r_vec / r                           # bond direction
+    a = a[valid]
+    b = b[valid]
 
-        F = 2 * k * (r - r0) * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+    r = r[valid]
+    r0 = r0[valid]
+    k = k[valid]
 
-        system.forces[a] += F                          # apply Newtons third law - equal and opposite forces
-        system.forces[b] -= F
+    r_vec = r_vec[valid]
 
-        global pot_e_total
-        pot_e_total += k * (r - r0)**2                # calc the harmonic bond potential in function 2 type bond
+    r_hat = r_vec / r[:, None]                           # bond direction
+
+    F = 2 * k[:, None] * (r - r0)[:, None] * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+
+    np.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
+    np.add.at(system.forces, b, -F)
+    global pot_e_total
+    pot_e_total += np.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
 
 
 
@@ -1018,49 +1021,78 @@ def bond_forces(system):
 
 def angle_forces(system):
     start_bond_angles = time.perf_counter()
+
+    ideal_ang = system.angle_theta0
+    atomA = system.angle_i
+    atomB = system.angle_j
+    atomC = system.angle_k
+    k = system.angle_kconst
+
+    BA = system.positions[atomA] - system.positions[atomB]                                # find vector of B to A
+    BC = system.positions[atomC] - system.positions[atomB]                                # find vector of B to C
+
+    BA = system.minimum_image(BA)                                                 # update the coppy vectors
+    BC = system.minimum_image(BC)
     
-    for i in range(len(system.angle_i)):
-
-        ideal_ang = system.angle_theta0[i]
-        atomA = system.angle_i[i]
-        atomB = system.angle_j[i]
-        atomC = system.angle_k[i]
-        k = system.angle_kconst[i]
-
-        BA = system.positions[atomA] - system.positions[atomB]                                # find vector of B to A
-        BC = system.positions[atomC] - system.positions[atomB]                                # find vector of B to C
-
-        BA = minimum_image(BA)                                                 # update the coppy vectors
-        BC = minimum_image(BC)
-        
-        r_BA = np.linalg.norm(BA)                                                          # get the lengths, as force depends on direction, and how long the arms are
-        r_BC = np.linalg.norm(BC)
-        
-        if r_BA < 1e-12 or r_BC < 1e-12:
-            continue
-        
-        theta_cos = (np.dot(BA, BC))/(r_BA*r_BC)                                           # calculate the dot product hrer
-        theta_cos = max(-1.0, min(1.0, theta_cos))                                      # clamp for safety
-        theta = math.acos(theta_cos)                                                    
-
-        sin_theta = math.sin(theta)                                                     # to not divide by zero
-        if abs(sin_theta) < 1e-8:
-            continue
-
-        dU_dtheta = k * (theta - ideal_ang)                                             # the error of the current angle vs ideal bond angle
-
-        f_a = -(dU_dtheta / sin_theta) * ((theta_cos / (r_BA * r_BA)) * BA - (1.0 / (r_BA * r_BC)) * BC) # build the part of the force on A that changes the angle without streaching BA
-
-        f_c = -(dU_dtheta / sin_theta) * ((theta_cos / (r_BC * r_BC)) * BC - (1.0 / (r_BA * r_BC)) * BA) # build the part of the force on C that changes the angle without streaching BC
-
-        f_b = -(f_a + f_c)                                                      # force to be applied on b to conserve energy
+    r_BA = np.linalg.norm(BA, axis=1)                                                          # get the lengths, as force depends on direction, and how long the arms are
+    r_BC = np.linalg.norm(BC, axis=1)
     
-        system.forces[atomA] += f_a                                               # update the forces
-        system.forces[atomB] += f_b
-        system.forces[atomC] += f_c
+    # create valid filter
+    valid = (r_BA > 1e-12) & (r_BC > 1e-12)
 
-        global pot_e_total
-        pot_e_total += 0.5 * k * (theta - ideal_ang)**2                # update the potential energy change from the angle
+    atomA = atomA[valid]
+    atomB = atomB[valid]
+    atomC = atomC[valid]
+
+    BA = BA[valid]
+    BC = BC[valid]
+
+    r_BA = r_BA[valid]
+    r_BC = r_BC[valid]
+
+    ideal_ang = ideal_ang[valid]
+    k = k[valid]
+
+    
+    theta_cos = np.sum(BA * BC, axis=1)                                             # calculate the dot product here
+    theta_cos /= r_BA * r_BC                                           
+    theta_cos = np.clip(theta_cos, -1.0, 1.0)                                      # clamp for safety
+    theta = np.arccos(theta_cos)                                                   
+
+    sin_theta = np.sin(theta)                                                     
+    valid = np.abs(sin_theta) > 1e-8                                                # to not divide by zero
+
+    atomA = atomA[valid]
+    atomB = atomB[valid]
+    atomC = atomC[valid]
+
+    BA = BA[valid]
+    BC = BC[valid]
+
+    r_BA = r_BA[valid]
+    r_BC = r_BC[valid]
+
+    ideal_ang = ideal_ang[valid]
+    k = k[valid]
+
+    theta = theta[valid]
+    theta_cos = theta_cos[valid]
+    sin_theta = sin_theta[valid]
+
+
+    dU_dtheta = k * (theta - ideal_ang)                                             # the error of the current angle vs ideal bond angle
+    f_a = -(dU_dtheta / sin_theta)[:, None] * ((theta_cos/(r_BA*r_BA))[:,None] * BA - (1.0 / (r_BA * r_BC))[:, None] * BC) # build the part of the force on A that changes the angle without streaching BA
+
+    f_c = -(dU_dtheta / sin_theta)[:, None] * ((theta_cos/(r_BC*r_BC))[:,None] * BC - (1.0 / (r_BA * r_BC))[:, None] * BA) # build the part of the force on C that changes the angle without streaching BC
+
+    f_b = -(f_a + f_c)                                                      # force to be applied on b to conserve energy
+
+    np.add.at(system.forces, atomA, f_a)                                               # update the forces
+    np.add.at(system.forces, atomB, f_b)
+    np.add.at(system.forces, atomC, f_c)
+
+    global pot_e_total
+    pot_e_total += np.sum(0.5 * k * (theta - ideal_ang)**2)                # update the potential energy change from the angle
 
     end_bond_angles = time.perf_counter()
     global time_taken_bond_angles
@@ -1069,65 +1101,107 @@ def angle_forces(system):
 def torsion_forces(system):
     start_torsions = time.perf_counter()
     
-    for i in range(len(system.torsion_i)):
-        a1 = system.torsion_i[i]                           # 4 atoms involved in the torsion bond
-        a2 = system.torsion_j[i] 
-        a3 = system.torsion_k[i]
-        a4 = system.torsion_l[i]
+    a1 = system.torsion_i                           # 4 atoms involved in the torsion bond
+    a2 = system.torsion_j 
+    a3 = system.torsion_k
+    a4 = system.torsion_l
+
+    b1 = system.positions[a2] - system.positions[a1]      # directions of the three bonds
+    b2 = system.positions[a3] - system.positions[a2]
+    b3 = system.positions[a4] - system.positions[a3]
+
+    b1 = system.minimum_image(b1)                 # update the vectors of coppies
+    b2 = system.minimum_image(b2)
+    b3 = system.minimum_image(b3)
+
+    n1 = np.cross(b1, b2)                      # normal to plane ABC
+    n2 = np.cross(b2, b3)                      # normal to plane BCD
+
+    eps = 1e-12
+    n1_sq = np.sum(n1*n1, axis=1)
+    n2_sq = np.sum(n2*n2, axis=1)
+
+    b2_sq = np.sum(b2*b2, axis=1)
+    b2_mag = np.linalg.norm(b2, axis=1)
+
+    valid = ((n1_sq > eps) & (n2_sq > eps) & (b2_sq > eps))    # makes sure small values dont blow the system up
+
+    x = np.sum(n1*n2, axis=1)
 
 
-        b1 = system.positions[a2] - system.positions[a1]      # directions of the three bonds
-        b2 = system.positions[a3] - system.positions[a2]
-        b3 = system.positions[a4] - system.positions[a3]
+    b2_hat = np.zeros_like(b2)
+    b2_hat[valid] = (
+        b2[valid]
+        / b2_mag[valid, None]
+    )
+    cross12 = np.cross(n1,n2)
 
-        b1 = minimum_image(b1)                 # update the vectors of coppies
-        b2 = minimum_image(b2)
-        b3 = minimum_image(b3)
+    y = np.sum(
+        cross12 * b2_hat,
+        axis=1
+    )
 
-        n1 = np.cross(b1, b2)                      # normal to plane ABC
-        n2 = np.cross(b2, b3)                      # normal to plane BCD
+    psi = np.arctan2(y, x)                  # caluclate current psi angle 
 
-        eps = 1e-12
-        n1_sq = np.dot(n1, n1)
-        n2_sq = np.dot(n2, n2)
-        b2_sq = np.dot(b2, b2)
-        b2_mag = np.linalg.norm(b2)
+    n_torsions = len(system.torsion_i)
 
-        if n1_sq < eps or n2_sq < eps or b2_sq < eps:    # makes sure small values dont blow the system up
+    torsion_e = np.zeros(n_torsions)
+    dV_dpsi = np.zeros(n_torsions)
+    
+    for i, terms in enumerate(system.torsion_terms):        # system.torsion_terms is a ragged list, and is nasty to vectorise cleanly
+
+        if not valid[i]:
             continue
-        
-        x = np.dot(n1, n2)
-        y = np.dot(np.cross(n1, n2),b2 / b2_mag)
 
-        psi = math.atan2(y, x)                  # caluclate current psi angle 
+        psi_i = psi[i]
 
-        torsion_e = 0
-        dV_dpsi = 0
-        
-        for k, n, delta in system.torsion_terms[i]:                             # repeats for each term, updating the cos graph
-            torsion_e += k * (1 + math.cos(n * psi - delta))   # calculate the potential energy
-            dV_dpsi -= k * n * math.sin(n * psi - delta)            # how strongly the torsion wants to rotate
-        
-            
-        fa_pref = dV_dpsi * (b2_mag / n1_sq)           # calculates the geometric scallings of the force
-        fd_pref = -dV_dpsi * (b2_mag / n2_sq)
 
-        f_a = fa_pref * n1                              # aligning the forces with the direction to the plane
-        f_d = fd_pref * n2
+        for k_term, n, delta in terms:                             # repeats for each term, updating the cos graph
+            torsion_e[i] += k_term * (1 + np.cos(n * psi_i - delta))   # calculate the potential energy
+            dV_dpsi[i] -= k_term * n * np.sin(n * psi_i - delta)            # how strongly the torsion wants to rotate
+    
 
-        c1 = np.dot(b1, b2) / b2_sq                        # calculates how much b and c lean along the middle bond
-        c2 = np.dot(b3, b2) / b2_sq
+    fa_pref = np.zeros_like(dV_dpsi)            # calculates the geometric scallings of the force
+    fd_pref = np.zeros_like(dV_dpsi)
 
-        f_b = -(1.0 + c1) * f_a + c2 * f_d                # calculate the final forces of b and c, by taking into account the forces of a and d
-        f_c = -(f_a + f_b + f_d)
+    fa_pref[valid] = (
+        dV_dpsi[valid]
+        * b2_mag[valid]
+        / n1_sq[valid]
+    )
 
-        system.forces[a1] += f_a                         # apply force to atom a
-        system.forces[a2] += f_b                         # apply force to atom b
-        system.forces[a3] += f_c                         # apply force to atom c
-        system.forces[a4] += f_d                         # apply force to atom d
+    fd_pref[valid] = (
+        -dV_dpsi[valid]
+        * b2_mag[valid]
+        / n2_sq[valid]
+    )
 
-        global pot_e_total
-        pot_e_total += torsion_e  # calculate the potential energy
+    f_a = fa_pref[:, None] * n1                             # aligning the forces with the direction to the plane
+    f_d = fd_pref[:, None] * n2
+
+    c1 = np.zeros_like(b2_sq)                               # calculates how much b and c lean along the middle bond
+    c2 = np.zeros_like(b2_sq)
+
+    c1[valid] = (
+        np.sum(b1[valid]*b2[valid],axis=1)
+        / b2_sq[valid]
+    )
+
+    c2[valid] = (
+        np.sum(b3[valid]*b2[valid],axis=1)
+        / b2_sq[valid]
+    )
+
+    f_b = (-(1.0 + c1)[:, None] * f_a + c2[:, None] * f_d)                # calculate the final forces of b and c, by taking into account the forces of a and d
+    f_c = -(f_a + f_b + f_d)
+
+    np.add.at(system.forces, a1,  f_a)                         # apply force to atom a
+    np.add.at(system.forces, a2,  f_b)                         # apply force to atom b
+    np.add.at(system.forces, a3,  f_c)                         # apply force to atom c
+    np.add.at(system.forces, a4,  f_d)                         # apply force to atom d
+
+    global pot_e_total
+    pot_e_total += np.sum(torsion_e)  # calculate the potential energy
 
     end_torsions = time.perf_counter()
     global time_taken_torsions
@@ -1155,7 +1229,7 @@ def non_bonded_forces(system):
                 LJ_scale = 1                        # normal non-bonded forces on all other atoms
                 coulomb_scale = 1
 
-            r_vec = minimum_image(system.positions[j] - system.positions[i])     # find pair distances and update the "ghost molecules" 
+            r_vec = system.minimum_image(system.positions[j] - system.positions[i])     # find pair distances and update the "ghost molecules" 
             r = np.linalg.norm(r_vec)
 
             if r < 1e-12:
@@ -1270,12 +1344,10 @@ while True:
     
     # Verlet integration method:
     # 1. half-step velocity update
-    for i in range(system.n_atoms):
-        system.velocities[i] += 0.5 * (system.forces[i] /system.masses[i]) * TIME_STEP     # first half-step velocity update - uses current force to push velocity halfway forward
+    system.velocities += (0.5 * (system.forces /system.masses[:, None]) * TIME_STEP)     # first half-step velocity update - uses current force to push velocity halfway forward
 
     # 2. position update
-    for i in range(system.n_atoms):
-        system.positions[i] += system.velocities[i] * TIME_STEP                      # update pos
+    system.positions += (system.velocities * TIME_STEP)                      # update pos
 
     # 3. wrap positions back into box
     wrap_molecules(system)
@@ -1287,8 +1359,7 @@ while True:
     pot_e = calc_physics()                                           # now get new forces at the new positions
 
     # 6. second half-step velocity update
-    for i in range(system.n_atoms):
-        system.velocities[i] += 0.5 * (system.forces[i] / system.masses[i]) * TIME_STEP     # compleate  the full velocity update using the new forces
+    system.velocities += (0.5 * (system.forces / system.masses[:, None]) * TIME_STEP)   # compleate  the full velocity update using the new forces
 
     # 7. dampen starting strains - ensures the system is calm so it doesent blow up to begin with
 
@@ -1301,8 +1372,7 @@ while True:
     else:
         damping = 1                                             # no more dampening
         
-    for i in range(system.n_atoms):
-        system.velocities[i] *= damping                                 # dampens some of the velocity at each step when begining
+    system.velocities *= damping                                 # dampens some of the velocity at each step when begining
 
     k_e = calc_KE(system)                                             # energy tracking
     total_e = k_e + pot_e
@@ -1314,7 +1384,7 @@ while True:
 
     # find the displacement of the atom this timestep
     for i, atom in enumerate(system.atoms):
-        disp2 = minimum_image(system.positions[i] - atom.last_neighbour_reference)
+        disp2 = system.minimum_image(system.positions[i] - atom.last_neighbour_reference)
 
         displacement2 = r2 = np.dot(disp2,disp2)
 
@@ -1365,7 +1435,7 @@ while True:
         if step >= (relax_steps+timestep_x):
             average_total_energy = average_total_energy/timestep_x
             steps.append(step)
-            avg_sys_energy_values.append(average_total_energy)
+            avg_sys_energy_values.append((average_total_energy - initial_total_energy) / abs(initial_total_energy))
 
             line.set_data(steps, avg_sys_energy_values)
 
