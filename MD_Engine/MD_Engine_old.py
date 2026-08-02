@@ -44,6 +44,14 @@ class Molecule:
     def __init__(self, atom_indices):
         self.atom_indices = atom_indices
 
+# ------------------------
+# PME PARAMETERS
+# ------------------------
+
+PME_ALPHA = 0.35
+PME_GRID = 32
+BSPLINE_ORDER = 4
+
 class System:
     def __init__(self):
 
@@ -90,6 +98,13 @@ class System:
         self.pair_lj_scale = np.empty(0, dtype=np.float64)
         self.pair_coulomb_scale = np.empty(0, dtype=np.float64)
 
+        self.rho = np.zeros(
+            (PME_GRID, PME_GRID, PME_GRID),
+            dtype=np.float64
+        )
+
+        self.BC = None
+
 
     def minimum_image(self, r_vector):
         return r_vector - PBC_BOX_LENGTH * np.round(r_vector / PBC_BOX_LENGTH)
@@ -130,21 +145,11 @@ time_taken_bonds = 0
 time_taken_bond_angles = 0
 time_taken_torsions = 0
 time_taken_non_bonded = 0
-time_taken_LJ = 0
-time_taken_coulombs = 0
+time_taken_LJ_and_coulombs = 0
+time_taken_PME = 0
 time_taken_graphics = 0
 time_taken_total = 0
 time_other = 0
-
-# ------------------------
-# PME PARAMETERS
-# ------------------------
-
-PME_ALPHA = 0.35
-PME_GRID = 32
-BSPLINE_ORDER = 4
-
-rho = np.zeros((PME_GRID, PME_GRID, PME_GRID), dtype=float)
 
 # -- SETUP --
 
@@ -537,10 +542,6 @@ def wrap_molecules(system):
             for i in mol.atom_indices:
                 system.positions[i] += shift
 
-# minimum image periodic correction - turns the vector into the nearest image vector
-
-
-
 
 # simple camera movement via key press
 def update_camera(dt):
@@ -681,95 +682,115 @@ def neighbouring_cells(cell):
 
 # -------- PME --------
 
-# Convert a VPython position into fractional mesh coordinates
-def position_to_mesh(pos):
-    half = PBC_BOX_LENGTH / 2
-    x = (pos[0] + half) / PBC_BOX_LENGTH
-    y = (pos[1] + half) / PBC_BOX_LENGTH
-    z = (pos[2] + half) / PBC_BOX_LENGTH
 
-    return (
-        x * PME_GRID,
-        y * PME_GRID,
-        z * PME_GRID
-    )
+# Convert all particle positions into fractional mesh coordinates
+def position_to_mesh(system):
 
-# Cardinal B-spline of arbitrary order
+    half = PBC_BOX_LENGTH * 0.5
+
+    gx = ((system.positions[:,0] + half) / PBC_BOX_LENGTH) * PME_GRID
+    gy = ((system.positions[:,1] + half) / PBC_BOX_LENGTH) * PME_GRID
+    gz = ((system.positions[:,2] + half) / PBC_BOX_LENGTH) * PME_GRID
+
+    return gx, gy, gz
+
 def bspline(n, u):
 
-    # First-order spline (piecewise constant)
-    if n == 1:
-        if 0.0 <= u < 1.0:
-            return 1.0
-        return 0.0
+    u = np.atleast_1d(np.asarray(u, dtype=np.float64))
+
+    spline = np.zeros_like(u)
+
+    factorial = math.factorial(n - 1)
+
+    for k in range(n + 1):
+
+        coeff = ((-1) ** k) * math.comb(n, k)
+
+        spline += (
+            coeff *
+            np.maximum(u - k, 0.0) ** (n - 1)
+        )
+
+    spline /= factorial
+
+    return spline
+
+def bspline_derivative(n, u):
+
+    u = np.atleast_1d(np.asarray(u, dtype=np.float64))
+
+    if n <= 1:
+        return np.zeros_like(u)
 
     return (
-        (u / (n - 1)) * bspline(n - 1, u)
-        +
-        ((n - u) / (n - 1)) * bspline(n - 1, u - 1)
+        bspline(n - 1, u)
+        - bspline(n - 1, u - 1)
     )
+
 
 def compute_theta(f):
 
-    theta = np.zeros(BSPLINE_ORDER)
-    dtheta = np.zeros(BSPLINE_ORDER)
+    f = np.atleast_1d(np.asarray(f, dtype=np.float64))
+
+    theta = np.empty((f.size, BSPLINE_ORDER), dtype=np.float64)
+    dtheta = np.empty((f.size, BSPLINE_ORDER), dtype=np.float64)
 
     for i in range(BSPLINE_ORDER):
 
         u = f + (BSPLINE_ORDER - 1 - i)
 
-        theta[i] = bspline(BSPLINE_ORDER, u)
-        dtheta[i] = bspline_derivative(BSPLINE_ORDER, u)
+        theta[:, i] = bspline(BSPLINE_ORDER, u)
+        dtheta[:, i] = bspline_derivative(BSPLINE_ORDER, u)
 
     return theta, dtheta
 
+
 def build_charge_grid(system):
 
-    rho.fill(0.0)
-    spline_order = 4
+    system.rho.fill(0.0)
 
-    for i in range(system.n_atoms):
+    gx, gy, gz = position_to_mesh(system)
 
-        gx, gy, gz = position_to_mesh(system.positions[i])
+    # Lower-left grid point
+    ix = np.floor(gx).astype(np.int32)
+    iy = np.floor(gy).astype(np.int32)
+    iz = np.floor(gz).astype(np.int32)
 
-        # Lower-left grid point
-        ix = math.floor(gx)
-        iy = math.floor(gy)
-        iz = math.floor(gz)
+    # Fractional offsets inside the cell
+    fx = gx - ix
+    fy = gy - iy
+    fz = gz - iz
 
-        # Fractional offsets inside the cell
-        fx = gx - ix
-        fy = gy - iy
-        fz = gz - iz
+    theta_x, _ = compute_theta(fx)
+    theta_y, _ = compute_theta(fy)
+    theta_z, _ = compute_theta(fz)
 
-        theta_x, _ = compute_theta(fx)
-        theta_y, _ = compute_theta(fy)
-        theta_z, _ = compute_theta(fz)
+    # Spread charge over a 4×4×4 cube
+    for dx in range(BSPLINE_ORDER):
 
-        # Spread charge over a 4×4×4 cube
-        for dx in range(spline_order):
+        wx = theta_x[:, dx]
 
-            wx = theta_x[dx]
+        for dy in range(BSPLINE_ORDER):
 
-            for dy in range(spline_order):
+            wy = theta_y[:, dy]
 
-                wy = theta_y[dy]
+            for dz in range(BSPLINE_ORDER):
 
-                for dz in range(spline_order):
+                wz = theta_z[:, dz]
 
-                    wz = theta_z[dz]
-
-                    rho[
+                np.add.at(
+                    system.rho,
+                    (
                         (ix + dx) % PME_GRID,
                         (iy + dy) % PME_GRID,
                         (iz + dz) % PME_GRID
-                    ] += system.charges[i] * wx * wy * wz
+                    ),
+                    system.charges * wx * wy * wz
+                )
 
-    return rho
+    return system.rho
 
 def build_reciprocal_kernel():
-
-    global C
 
     C = np.zeros(
         (PME_GRID, PME_GRID, PME_GRID),
@@ -824,8 +845,6 @@ def build_reciprocal_kernel():
 
     return C
 
-C = build_reciprocal_kernel()
-
 def b_factor(m):
 
     total = 0j
@@ -833,14 +852,14 @@ def b_factor(m):
     for k in range(BSPLINE_ORDER - 1):
 
         total += (
-            bspline(BSPLINE_ORDER, k + 1)
+            bspline(BSPLINE_ORDER, k + 1).item()
             *
             np.exp(
                 -2j * math.pi * m * k / PME_GRID
             )
         )
 
-    if abs(total) < 1e-12:
+    if np.abs(total) < 1e-12:
         return 0.0
 
     phase = np.exp(
@@ -852,8 +871,6 @@ def b_factor(m):
     return abs(b)**2
 
 def build_B():
-
-    global B
 
     B = np.zeros(
         (PME_GRID, PME_GRID, PME_GRID),
@@ -891,87 +908,81 @@ def build_B():
 
     return B
 
-B = build_B()
-
-BC = B * C
-
-def bspline_derivative(n, u):
-
-    if n <= 1:
-        return 0.0
-
-    return (
-        bspline(n - 1, u)
-        -
-        bspline(n - 1, u - 1)
-    )
+system.BC = (
+    build_B()
+    *
+    build_reciprocal_kernel()
+)
 
 def reciprocal_interpolation(system, potential):
 
     scale = PME_GRID / PBC_BOX_LENGTH
 
-    for i in range(system.n_atoms):
+    # Compute mesh coordinates for every atom
+    gx, gy, gz = position_to_mesh(system)
 
-        gx, gy, gz = position_to_mesh(system.positions[i])
+    ix = np.floor(gx).astype(np.int32)
+    iy = np.floor(gy).astype(np.int32)
+    iz = np.floor(gz).astype(np.int32)
 
-        ix = math.floor(gx)
-        iy = math.floor(gy)
-        iz = math.floor(gz)
+    fx = gx - ix
+    fy = gy - iy
+    fz = gz - iz
 
-        fx = gx - ix
-        fy = gy - iy
-        fz = gz - iz
-
-        theta_x, dtheta_x = compute_theta(fx)
-        theta_y, dtheta_y = compute_theta(fy)
-        theta_z, dtheta_z = compute_theta(fz)
+    theta_x, dtheta_x = compute_theta(fx)
+    theta_y, dtheta_y = compute_theta(fy)
+    theta_z, dtheta_z = compute_theta(fz)
 
 
-        dPhidx = 0.0
-        dPhidy = 0.0
-        dPhidz = 0.0
 
-        Phi = 0.0
+    Phi = np.zeros(system.n_atoms, dtype=np.float64)
 
-        for dx in range(BSPLINE_ORDER):
+    dPhidx = np.zeros(system.n_atoms, dtype=np.float64)
+    dPhidy = np.zeros(system.n_atoms, dtype=np.float64)
+    dPhidz = np.zeros(system.n_atoms, dtype=np.float64)
 
-            wx = theta_x[dx]
-            dwx = dtheta_x[dx]
+    for dx in range(BSPLINE_ORDER):
 
-            for dy in range(BSPLINE_ORDER):
+        wx = theta_x[:, dx]
+        dwx = dtheta_x[:, dx]
 
-                wy = theta_y[dy]
-                dwy = dtheta_y[dy]
+        for dy in range(BSPLINE_ORDER):
 
-                for dz in range(BSPLINE_ORDER):
+            wy = theta_y[:, dy]
+            dwy = dtheta_y[:, dy]
 
-                    wz = theta_z[dz]
-                    dwz = dtheta_z[dz]
+            for dz in range(BSPLINE_ORDER):
 
-                    phi = potential[
-                        (ix+dx) % PME_GRID,
-                        (iy+dy) % PME_GRID,
-                        (iz+dz) % PME_GRID
-                    ].real
+                wz = theta_z[:, dz]
+                dwz = dtheta_z[:, dz]
 
-                    Phi += phi * wx * wy * wz
+                phi = np.real(
+                    potential[
+                        (ix + dx) % PME_GRID,
+                        (iy + dy) % PME_GRID,
+                        (iz + dz) % PME_GRID
+                    ]
+                )
 
-                    dPhidx += phi * dwx * wy * wz
-                    dPhidy += phi * wx * dwy * wz
-                    dPhidz += phi * wx * wy * dwz
+                Phi += phi * wx * wy * wz
 
-        global pot_e_total
-        global reciprocal_PE
+                dPhidx += phi * dwx * wy * wz
+                dPhidy += phi * wx * dwy * wz
+                dPhidz += phi * wx * wy * dwz
 
-        energy = 0.5 * COULOMB_CONSTANT * system.charges[i] * Phi
 
-        reciprocal_PE += energy
-        pot_e_total += energy
+    energy = 0.5 * COULOMB_CONSTANT * system.charges * Phi
 
-        Fx = COULOMB_CONSTANT * system.charges[i] * scale * dPhidx
-        Fy = COULOMB_CONSTANT * system.charges[i] * scale * dPhidy
-        Fz = COULOMB_CONSTANT * system.charges[i] * scale * dPhidz
-        system.forces[i] -= np.array([Fx, Fy, Fz])
+    global reciprocal_PE
+    global pot_e_total
+    reciprocal_PE += np.sum(energy)
+    pot_e_total += np.sum(energy)
+
+    Fx = COULOMB_CONSTANT * system.charges * scale * dPhidx
+    Fy = COULOMB_CONSTANT * system.charges * scale * dPhidy
+    Fz = COULOMB_CONSTANT * system.charges * scale * dPhidz
+
+    system.forces -= np.stack((Fx, Fy, Fz), axis=1)
 
 PME_SELF_ENERGY = 0.0
 PME_SELF_ENERGY += np.sum(system.charges * system.charges)
@@ -1402,25 +1413,25 @@ def calc_physics():
     # torsion angles
     torsion_forces(system)
 
-    start_LJ = time.perf_counter()
+    start_LJ_and_coulombs = time.perf_counter()
 
     # #LJ forces and Coulombs (non bonded loop)
     non_bonded_forces(system)
 
-    end_LJ = time.perf_counter()
-    global time_taken_LJ
-    time_taken_LJ += end_LJ - start_LJ
+    end_LJ_and_coulombs = time.perf_counter()
+    global time_taken_LJ_and_coulombs
+    time_taken_LJ_and_coulombs += end_LJ_and_coulombs - start_LJ_and_coulombs
 
     # -----------------------
     # Reciprocal-space PME
     # -----------------------
-    start_coulombs = time.perf_counter()
+    start_PME = time.perf_counter()
 
     apply_exclusion_corrections(system)
-    rho = build_charge_grid(system)
+    build_charge_grid(system)
 
-    Qk = np.fft.fftn(rho)
-    Qk *= BC
+    Qk = np.fft.fftn(system.rho)
+    Qk *= system.BC
 
     potential = np.fft.ifftn(Qk).real
     potential *= PME_GRID**3
@@ -1430,12 +1441,12 @@ def calc_physics():
     # account for the self energy shift
     pot_e_total += PME_SELF_ENERGY
 
-    end_coulombs = time.perf_counter()
-    global time_taken_coulombs
-    time_taken_coulombs += end_coulombs - start_coulombs
+    end_PME = time.perf_counter()
+    global time_taken_PME
+    time_taken_PME += end_PME - start_PME
 
     global time_taken_non_bonded
-    time_taken_non_bonded = time_taken_coulombs + time_taken_LJ
+    time_taken_non_bonded = time_taken_PME + time_taken_LJ_and_coulombs
     
     end_all_foces = time.perf_counter()
     global time_taken_all_foces
@@ -1585,8 +1596,8 @@ while True:
         print(f"Time By % of Bonds: {((time_taken_bonds/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Bond Angles: {((time_taken_bond_angles/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of Torsions: {((time_taken_torsions/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
-        print(f"Time By % of LJ: {((time_taken_LJ/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
-        print(f"Time By % of Coulombs: {((time_taken_coulombs/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of LJ: {((time_taken_LJ_and_coulombs/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
+        print(f"Time By % of Coulombs: {((time_taken_PME/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of non_bonded: {((time_taken_non_bonded/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of total forces: {((time_taken_all_foces/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of other: {((time_other/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
@@ -1597,8 +1608,8 @@ while True:
         time_taken_bond_angles = 0
         time_taken_torsions = 0
         time_taken_non_bonded = 0
-        time_taken_coulombs = 0
-        time_taken_LJ = 0
+        time_taken_PME = 0
+        time_taken_LJ_and_coulombs = 0
         time_taken_graphics = 0
         time_taken_total = 0
         time_other = 0
