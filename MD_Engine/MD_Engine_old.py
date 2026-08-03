@@ -6,7 +6,7 @@ import time
 from random import uniform
 import numpy as np
 import cupy as cp
-from scipy.special import erfc
+from cupyx.scipy.special import erfc
 import matplotlib.pyplot as plt
 # ------------------------
 # Length = nm
@@ -92,21 +92,24 @@ class System:
         self.torsion_terms = []
 
         # Non Bonded loop
-        self.pair_i = np.empty(0, dtype=np.int32)
-        self.pair_j = np.empty(0, dtype=np.int32)
+        self.pair_i = cp.empty(0, dtype=cp.int32)
+        self.pair_j = cp.empty(0, dtype=cp.int32)
 
-        self.pair_lj_scale = np.empty(0, dtype=np.float64)
-        self.pair_coulomb_scale = np.empty(0, dtype=np.float64)
+        self.pair_lj_scale = cp.empty(0, dtype=cp.float64)
+        self.pair_coulomb_scale = cp.empty(0, dtype=cp.float64)
 
-        self.rho = np.zeros(
+        self.rho = cp.zeros(
             (PME_GRID, PME_GRID, PME_GRID),
-            dtype=np.float64
+            dtype=cp.float64
         )
 
         self.BC = None
 
 
     def minimum_image(self, r_vector):
+        return r_vector - PBC_BOX_LENGTH * cp.round(r_vector / PBC_BOX_LENGTH)
+
+    def minimum_image_cpu(self, r_vector):
         return r_vector - PBC_BOX_LENGTH * np.round(r_vector / PBC_BOX_LENGTH)
 
 system = System()
@@ -133,8 +136,8 @@ SKIN_CUTOFF = 0.5
 REAL_CUTOFF = 9.0
 NEIGHBOUR_CUTOFF = SKIN_CUTOFF+REAL_CUTOFF
 COULOMB_CONSTANT = 138.935456
-PBC_BOX_LENGTH = 10
-MOLECULE_NUMBERS = 10
+PBC_BOX_LENGTH = 5
+MOLECULE_NUMBERS = 2
 CELL_SIZE = NEIGHBOUR_CUTOFF
 steps = []
 avg_sys_energy_values = []
@@ -375,54 +378,54 @@ for i in range(MOLECULE_NUMBERS):
 
 
 # create NumPy Vectors
-system.positions = np.asarray(
+system.positions = cp.asarray(
     system.positions,
-    dtype=np.float64
+    dtype=cp.float64
 )
 
-system.velocities = np.asarray(
+system.velocities = cp.asarray(
     system.velocities,
-    dtype=np.float64
+    dtype=cp.float64
 )
 
-system.forces = np.asarray(
+system.forces = cp.asarray(
     system.forces,
-    dtype=np.float64
+    dtype=cp.float64
 )
 
-system.charges = np.asarray(
+system.charges = cp.asarray(
     system.charges,
-    dtype=np.float64
+    dtype=cp.float64
 )
 
-system.masses = np.asarray(
+system.masses = cp.asarray(
     system.masses,
-    dtype=np.float64
+    dtype=cp.float64
 )
 
 # Topology
 system.n_atoms = len(system.positions)
 
 # Bonds
-system.bond_a = np.asarray(system.bond_a, dtype=np.int32)
-system.bond_b = np.asarray(system.bond_b, dtype=np.int32)
+system.bond_a = cp.asarray(system.bond_a, dtype=cp.int32)
+system.bond_b = cp.asarray(system.bond_b, dtype=cp.int32)
 
-system.bond_r0 = np.asarray(system.bond_r0, dtype=np.float64)
-system.bond_k = np.asarray(system.bond_k, dtype=np.float64)
+system.bond_r0 = cp.asarray(system.bond_r0, dtype=cp.float64)
+system.bond_k = cp.asarray(system.bond_k, dtype=cp.float64)
 
 # Angles
-system.angle_i = np.asarray(system.angle_i, dtype=np.int32)
-system.angle_j = np.asarray(system.angle_j, dtype=np.int32)
-system.angle_k = np.asarray(system.angle_k, dtype=np.int32)
-system.angle_theta0 = np.asarray(system.angle_theta0, dtype=np.float64)
-system.angle_kconst = np.asarray(system.angle_kconst, dtype=np.float64)
+system.angle_i = cp.asarray(system.angle_i, dtype=cp.int32)
+system.angle_j = cp.asarray(system.angle_j, dtype=cp.int32)
+system.angle_k = cp.asarray(system.angle_k, dtype=cp.int32)
+system.angle_theta0 = cp.asarray(system.angle_theta0, dtype=cp.float64)
+system.angle_kconst = cp.asarray(system.angle_kconst, dtype=cp.float64)
 
 # Torsions
 
-system.torsion_i = np.asarray(system.torsion_i, dtype=np.int32)
-system.torsion_j = np.asarray(system.torsion_j, dtype=np.int32)
-system.torsion_k = np.asarray(system.torsion_k, dtype=np.int32)
-system.torsion_l = np.asarray(system.torsion_l, dtype=np.int32)
+system.torsion_i = cp.asarray(system.torsion_i, dtype=cp.int32)
+system.torsion_j = cp.asarray(system.torsion_j, dtype=cp.int32)
+system.torsion_k = cp.asarray(system.torsion_k, dtype=cp.int32)
+system.torsion_l = cp.asarray(system.torsion_l, dtype=cp.int32)
 system.torsion_terms = system.torsion_terms
 
 
@@ -434,15 +437,15 @@ def calc_LJ_force(dist, direction):
 def calc_KE_old(system):
     k_e = 0
     for i in range(system.n_atoms): 
-        k_e = k_e + (0.5*system.masses[i]*(np.dot(system.velocities[i], system.velocities[i]))) # use dot product as v^2 to calc ke
+        k_e = k_e + (0.5*system.masses[i]*(cp.dot(system.velocities[i], system.velocities[i]))) # use dot product as v^2 to calc ke
     return k_e
 
 def calc_KE(system):
-    speed2 = np.sum(system.velocities**2, axis=1)
+    speed2 = cp.sum(system.velocities**2, axis=1)
 
     ke_per_atom = 0.5 * system.masses * speed2
 
-    k_e = np.sum(ke_per_atom)
+    k_e = cp.sum(ke_per_atom)
 
     return k_e 
 
@@ -450,11 +453,11 @@ def calc_KE(system):
 def calc_coulombs(q1, q2, r, direction, k):
 
     if r == 0:
-        return np.zeros(3)
+        return cp.zeros(3)
 
-    erfc_term = math.erfc(PME_ALPHA * r)
+    erfc_term = erfc(PME_ALPHA * r)
 
-    exp_term = math.exp(-(PME_ALPHA * r) ** 2)
+    exp_term = cp.exp(-(PME_ALPHA * r) ** 2)
 
     force_mag = (
         k
@@ -463,7 +466,7 @@ def calc_coulombs(q1, q2, r, direction, k):
         * (
             erfc_term / (r * r)
             +
-            (2.0 * PME_ALPHA / math.sqrt(math.pi))
+            (2.0 * PME_ALPHA / cp.sqrt(cp.pi))
             * exp_term / r
         )
     )
@@ -472,10 +475,14 @@ def calc_coulombs(q1, q2, r, direction, k):
 
 # builds the neibour list structure
 def build_neighbours():
+    bond_a_cpu = cp.asnumpy(system.bond_a)
+    bond_b_cpu = cp.asnumpy(system.bond_b)
+
     neighbours = {i: set() for i in range(system.n_atoms)}        # set makes sure no duplicates and fast to check
+
     for bond_index in range(len(system.bond_a)):
-        a1 = system.bond_a[bond_index]
-        a2 = system.bond_b[bond_index]
+        a1 = bond_a_cpu[bond_index]
+        a2 = bond_b_cpu[bond_index]
         neighbours[a1].add(a2)                    # bonding works both ways so adds the bond to the specific atom you are looking at at the moment
         neighbours[a2].add(a1)
 
@@ -530,7 +537,7 @@ def wrap_molecules(system):
 
     for mol in system.molecules:
         ref_pos = system.positions[mol.atom_indices[0]]
-        shift = np.zeros(3)
+        shift = cp.zeros(3)
 
         for d in range(3):                              # loop over x, y, z instead of one if/elif each
             while ref_pos[d] + shift[d] > half:
@@ -600,7 +607,7 @@ def LJ_calculations(system, r, r_hat, scale, LJ_energy_shift, i, j):
 
 def build_neighbour_lists(system, neighbour_cutoff):
     cutoff2 = neighbour_cutoff**2
-    
+    positions_cpu = cp.asnumpy(system.positions)
     # clear out all of the previous neighbour lists
 
     pair_i = []
@@ -609,17 +616,17 @@ def build_neighbour_lists(system, neighbour_cutoff):
     pair_lj_scale = []
     pair_coulomb_scale = []
 
-    cells = build_cell_list(system)
+    cells = build_cell_list(system, positions_cpu)
 
     for i in range(system.n_atoms):  
-        my_cell = find_cell_of_atom(system.positions[i])
+        my_cell = find_cell_of_atom(positions_cpu[i])
 
         for cell in neighbouring_cells(my_cell):
             for j in cells.get(cell, ()):
                 if j <= i:
                     continue
 
-                r_vec = system.minimum_image(system.positions[j] - system.positions[i])
+                r_vec = system.minimum_image_cpu(positions_cpu[j] - positions_cpu[i])
                 r2 = np.dot(r_vec, r_vec)                          # distance between pairs without square rooting - more efficient
 
                 if r2 > cutoff2:
@@ -642,13 +649,13 @@ def build_neighbour_lists(system, neighbour_cutoff):
 
     # update the new last neighbour refference for each atom
     for i, atom in enumerate(system.atoms):
-        atom.last_neighbour_reference = system.positions[i].copy()
+        atom.last_neighbour_reference = cp.asnumpy(system.positions[i]).copy()
 
-    system.pair_i = np.asarray(pair_i, dtype=np.int32)
-    system.pair_j = np.asarray(pair_j, dtype=np.int32)
+    system.pair_i = cp.asarray(pair_i, dtype=cp.int32)
+    system.pair_j = cp.asarray(pair_j, dtype=cp.int32)
 
-    system.pair_lj_scale = np.asarray(pair_lj_scale, dtype=np.float64)
-    system.pair_coulomb_scale = np.asarray(pair_coulomb_scale, dtype=np.float64)
+    system.pair_lj_scale = cp.asarray(pair_lj_scale, dtype=np.float64)
+    system.pair_coulomb_scale = cp.asarray(pair_coulomb_scale, dtype=np.float64)
 
 
 def find_cell_of_atom(atom_pos):
@@ -659,11 +666,11 @@ def find_cell_of_atom(atom_pos):
 
     )
 
-def build_cell_list(system):
+def build_cell_list(system, positions_cpu):
     cells = {}
 
     for i in range(system.n_atoms):
-        cell = find_cell_of_atom(system.positions[i])
+        cell = find_cell_of_atom(positions_cpu[i])
 
         if cell not in cells:
             cells[cell] = []
@@ -696,6 +703,27 @@ def position_to_mesh(system):
 
 def bspline(n, u):
 
+    u = cp.atleast_1d(cp.asarray(u, dtype=cp.float64))
+
+    spline = cp.zeros_like(u)
+
+    factorial = math.factorial(n - 1)
+
+    for k in range(n + 1):
+
+        coeff = ((-1) ** k) * math.comb(n, k)
+
+        spline += (
+            coeff *
+            cp.maximum(u - k, 0.0) ** (n - 1)
+        )
+
+    spline /= factorial
+
+    return spline
+
+def bspline_cpu(n, u):
+
     u = np.atleast_1d(np.asarray(u, dtype=np.float64))
 
     spline = np.zeros_like(u)
@@ -717,10 +745,10 @@ def bspline(n, u):
 
 def bspline_derivative(n, u):
 
-    u = np.atleast_1d(np.asarray(u, dtype=np.float64))
+    u = cp.atleast_1d(cp.asarray(u, dtype=cp.float64))
 
     if n <= 1:
-        return np.zeros_like(u)
+        return cp.zeros_like(u)
 
     return (
         bspline(n - 1, u)
@@ -730,10 +758,10 @@ def bspline_derivative(n, u):
 
 def compute_theta(f):
 
-    f = np.atleast_1d(np.asarray(f, dtype=np.float64))
+    f = cp.atleast_1d(cp.asarray(f, dtype=cp.float64))
 
-    theta = np.empty((f.size, BSPLINE_ORDER), dtype=np.float64)
-    dtheta = np.empty((f.size, BSPLINE_ORDER), dtype=np.float64)
+    theta = cp.empty((f.size, BSPLINE_ORDER), dtype=cp.float64)
+    dtheta = cp.empty((f.size, BSPLINE_ORDER), dtype=cp.float64)
 
     for i in range(BSPLINE_ORDER):
 
@@ -752,9 +780,9 @@ def build_charge_grid(system):
     gx, gy, gz = position_to_mesh(system)
 
     # Lower-left grid point
-    ix = np.floor(gx).astype(np.int32)
-    iy = np.floor(gy).astype(np.int32)
-    iz = np.floor(gz).astype(np.int32)
+    ix = cp.floor(gx).astype(cp.int32)
+    iy = cp.floor(gy).astype(cp.int32)
+    iz = cp.floor(gz).astype(cp.int32)
 
     # Fractional offsets inside the cell
     fx = gx - ix
@@ -778,7 +806,7 @@ def build_charge_grid(system):
 
                 wz = theta_z[:, dz]
 
-                np.add.at(
+                cp.add.at(
                     system.rho,
                     (
                         (ix + dx) % PME_GRID,
@@ -852,7 +880,7 @@ def b_factor(m):
     for k in range(BSPLINE_ORDER - 1):
 
         total += (
-            bspline(BSPLINE_ORDER, k + 1).item()
+            bspline_cpu(BSPLINE_ORDER, k + 1).item()
             *
             np.exp(
                 -2j * math.pi * m * k / PME_GRID
@@ -872,43 +900,22 @@ def b_factor(m):
 
 def build_B():
 
-    B = np.zeros(
-        (PME_GRID, PME_GRID, PME_GRID),
-        dtype=float
-    )
+    Bx = np.empty(PME_GRID)
 
     for i in range(PME_GRID):
 
-        if i <= PME_GRID//2:
-            mx = i
-        else:
-            mx = i - PME_GRID
+        m = i if i <= PME_GRID//2 else i-PME_GRID
+        Bx[i] = b_factor(m)
 
-        bx = b_factor(mx)
-
-        for j in range(PME_GRID):
-
-            if j <= PME_GRID//2:
-                my = j
-            else:
-                my = j - PME_GRID
-
-            by = b_factor(my)
-
-            for k in range(PME_GRID):
-
-                if k <= PME_GRID//2:
-                    mz = k
-                else:
-                    mz = k - PME_GRID
-
-                bz = b_factor(mz)
-
-                B[i,j,k] = bx * by * bz
+    B = (
+        Bx[:,None,None]
+        * Bx[None,:,None]
+        * Bx[None,None,:]
+    )
 
     return B
 
-system.BC = (
+system.BC = cp.asarray(
     build_B()
     *
     build_reciprocal_kernel()
@@ -921,9 +928,9 @@ def reciprocal_interpolation(system, potential):
     # Compute mesh coordinates for every atom
     gx, gy, gz = position_to_mesh(system)
 
-    ix = np.floor(gx).astype(np.int32)
-    iy = np.floor(gy).astype(np.int32)
-    iz = np.floor(gz).astype(np.int32)
+    ix = cp.floor(gx).astype(cp.int32)
+    iy = cp.floor(gy).astype(cp.int32)
+    iz = cp.floor(gz).astype(cp.int32)
 
     fx = gx - ix
     fy = gy - iy
@@ -935,11 +942,11 @@ def reciprocal_interpolation(system, potential):
 
 
 
-    Phi = np.zeros(system.n_atoms, dtype=np.float64)
+    Phi = cp.zeros(system.n_atoms, dtype=cp.float64)
 
-    dPhidx = np.zeros(system.n_atoms, dtype=np.float64)
-    dPhidy = np.zeros(system.n_atoms, dtype=np.float64)
-    dPhidz = np.zeros(system.n_atoms, dtype=np.float64)
+    dPhidx = cp.zeros(system.n_atoms, dtype=cp.float64)
+    dPhidy = cp.zeros(system.n_atoms, dtype=cp.float64)
+    dPhidz = cp.zeros(system.n_atoms, dtype=cp.float64)
 
     for dx in range(BSPLINE_ORDER):
 
@@ -956,7 +963,7 @@ def reciprocal_interpolation(system, potential):
                 wz = theta_z[:, dz]
                 dwz = dtheta_z[:, dz]
 
-                phi = np.real(
+                phi = cp.real(
                     potential[
                         (ix + dx) % PME_GRID,
                         (iy + dy) % PME_GRID,
@@ -975,17 +982,17 @@ def reciprocal_interpolation(system, potential):
 
     global reciprocal_PE
     global pot_e_total
-    reciprocal_PE += np.sum(energy)
-    pot_e_total += np.sum(energy)
+    reciprocal_PE += cp.sum(energy)
+    pot_e_total += cp.sum(energy)
 
     Fx = COULOMB_CONSTANT * system.charges * scale * dPhidx
     Fy = COULOMB_CONSTANT * system.charges * scale * dPhidy
     Fz = COULOMB_CONSTANT * system.charges * scale * dPhidz
 
-    system.forces -= np.stack((Fx, Fy, Fz), axis=1)
+    system.forces -= cp.stack((Fx, Fy, Fz), axis=1)
 
 PME_SELF_ENERGY = 0.0
-PME_SELF_ENERGY += np.sum(system.charges * system.charges)
+PME_SELF_ENERGY += cp.sum(system.charges * system.charges)
 
 PME_SELF_ENERGY *= (
     -COULOMB_CONSTANT
@@ -997,12 +1004,12 @@ def coulomb_exclusion_correction(system, q1, q2, r, r_hat, i, j):
     global pot_e_total, real_space_PE
     if r < 1e-12:
         return
-    erf_term = math.erf(PME_ALPHA * r)
-    exp_term = math.exp(-(PME_ALPHA * r) ** 2)
+    erf_term = erf(PME_ALPHA * r)
+    exp_term = cp.exp(-(PME_ALPHA * r) ** 2)
 
     # cancels the erf(r)/r contribution the reciprocal grid implicitly added for this excluded pair
     force_mag = COULOMB_CONSTANT * q1 * q2 * (
-        erf_term / (r * r) - (2.0 * PME_ALPHA / math.sqrt(math.pi)) * exp_term / r
+        erf_term / (r * r) - (2.0 * PME_ALPHA / cp.sqrt(math.pi)) * exp_term / r
     )
     F = force_mag * r_hat
     system.forces[i] += F
@@ -1015,12 +1022,12 @@ def coulomb_exclusion_correction(system, q1, q2, r, r_hat, i, j):
 def apply_exclusion_corrections(system):
     for (i, j) in bonded_12 | bonded_13:
         r_vec = system.minimum_image(system.positions[j] - system.positions[i])
-        r = np.linalg.norm(r_vec)
+        r = cp.linalg.norm(r_vec)
         if r < 1e-12:
             continue
         r_hat = r_vec / r
-        q1 = float(system.charges[i])
-        q2 = float(system.charges[j])
+        q1 = system.charges[i]
+        q2 = system.charges[j]
         coulomb_exclusion_correction(system, q1, q2, r, r_hat, i, j)
 
 
@@ -1036,7 +1043,7 @@ def bond_forces(system):
 
     # compute the bond vector and bond lengths
     r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
-    r = np.linalg.norm(r_vec, axis=1)
+    r = cp.linalg.norm(r_vec, axis=1)
 
     valid = r > 1e-12                              # avoid devide by zero just in case
 
@@ -1053,10 +1060,10 @@ def bond_forces(system):
 
     F = 2 * k[:, None] * (r - r0)[:, None] * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
 
-    np.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
-    np.add.at(system.forces, b, -F)
+    cp.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
+    cp.add.at(system.forces, b, -F)
     global pot_e_total
-    pot_e_total += np.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
+    pot_e_total += cp.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
 
 
 
@@ -1079,8 +1086,8 @@ def angle_forces(system):
     BA = system.minimum_image(BA)                                                 # update the coppy vectors
     BC = system.minimum_image(BC)
     
-    r_BA = np.linalg.norm(BA, axis=1)                                                          # get the lengths, as force depends on direction, and how long the arms are
-    r_BC = np.linalg.norm(BC, axis=1)
+    r_BA = cp.linalg.norm(BA, axis=1)                                                          # get the lengths, as force depends on direction, and how long the arms are
+    r_BC = cp.linalg.norm(BC, axis=1)
     
     # create valid filter
     valid = (r_BA > 1e-12) & (r_BC > 1e-12)
@@ -1099,13 +1106,13 @@ def angle_forces(system):
     k = k[valid]
 
     
-    theta_cos = np.sum(BA * BC, axis=1)                                             # calculate the dot product here
+    theta_cos = cp.sum(BA * BC, axis=1)                                             # calculate the dot product here
     theta_cos /= r_BA * r_BC                                           
-    theta_cos = np.clip(theta_cos, -1.0, 1.0)                                      # clamp for safety
-    theta = np.arccos(theta_cos)                                                   
+    theta_cos = cp.clip(theta_cos, -1.0, 1.0)                                      # clamp for safety
+    theta = cp.arccos(theta_cos)                                                   
 
-    sin_theta = np.sin(theta)                                                     
-    valid = np.abs(sin_theta) > 1e-8                                                # to not divide by zero
+    sin_theta = cp.sin(theta)                                                     
+    valid = cp.abs(sin_theta) > 1e-8                                                # to not divide by zero
 
     atomA = atomA[valid]
     atomB = atomB[valid]
@@ -1132,12 +1139,12 @@ def angle_forces(system):
 
     f_b = -(f_a + f_c)                                                      # force to be applied on b to conserve energy
 
-    np.add.at(system.forces, atomA, f_a)                                               # update the forces
-    np.add.at(system.forces, atomB, f_b)
-    np.add.at(system.forces, atomC, f_c)
+    cp.add.at(system.forces, atomA, f_a)                                               # update the forces
+    cp.add.at(system.forces, atomB, f_b)
+    cp.add.at(system.forces, atomC, f_c)
 
     global pot_e_total
-    pot_e_total += np.sum(0.5 * k * (theta - ideal_ang)**2)                # update the potential energy change from the angle
+    pot_e_total += cp.sum(0.5 * k * (theta - ideal_ang)**2)                # update the potential energy change from the angle
 
     end_bond_angles = time.perf_counter()
     global time_taken_bond_angles
@@ -1159,39 +1166,39 @@ def torsion_forces(system):
     b2 = system.minimum_image(b2)
     b3 = system.minimum_image(b3)
 
-    n1 = np.cross(b1, b2)                      # normal to plane ABC
-    n2 = np.cross(b2, b3)                      # normal to plane BCD
+    n1 = cp.cross(b1, b2)                      # normal to plane ABC
+    n2 = cp.cross(b2, b3)                      # normal to plane BCD
 
     eps = 1e-12
-    n1_sq = np.sum(n1*n1, axis=1)
-    n2_sq = np.sum(n2*n2, axis=1)
+    n1_sq = cp.sum(n1*n1, axis=1)
+    n2_sq = cp.sum(n2*n2, axis=1)
 
-    b2_sq = np.sum(b2*b2, axis=1)
-    b2_mag = np.linalg.norm(b2, axis=1)
+    b2_sq = cp.sum(b2*b2, axis=1)
+    b2_mag = cp.linalg.norm(b2, axis=1)
 
     valid = ((n1_sq > eps) & (n2_sq > eps) & (b2_sq > eps))    # makes sure small values dont blow the system up
 
-    x = np.sum(n1*n2, axis=1)
+    x = cp.sum(n1*n2, axis=1)
 
 
-    b2_hat = np.zeros_like(b2)
+    b2_hat = cp.zeros_like(b2)
     b2_hat[valid] = (
         b2[valid]
         / b2_mag[valid, None]
     )
-    cross12 = np.cross(n1,n2)
+    cross12 = cp.cross(n1,n2)
 
-    y = np.sum(
+    y = cp.sum(
         cross12 * b2_hat,
         axis=1
     )
 
-    psi = np.arctan2(y, x)                  # caluclate current psi angle 
+    psi = cp.arctan2(y, x)                  # caluclate current psi angle 
 
     n_torsions = len(system.torsion_i)
 
-    torsion_e = np.zeros(n_torsions)
-    dV_dpsi = np.zeros(n_torsions)
+    torsion_e = cp.zeros(n_torsions)
+    dV_dpsi = cp.zeros(n_torsions)
     
     for i, terms in enumerate(system.torsion_terms):        # system.torsion_terms is a ragged list, and is nasty to vectorise cleanly
 
@@ -1202,12 +1209,12 @@ def torsion_forces(system):
 
 
         for k_term, n, delta in terms:                             # repeats for each term, updating the cos graph
-            torsion_e[i] += k_term * (1 + np.cos(n * psi_i - delta))   # calculate the potential energy
-            dV_dpsi[i] -= k_term * n * np.sin(n * psi_i - delta)            # how strongly the torsion wants to rotate
+            torsion_e[i] += k_term * (1 + cp.cos(n * psi_i - delta))   # calculate the potential energy
+            dV_dpsi[i] -= k_term * n * cp.sin(n * psi_i - delta)            # how strongly the torsion wants to rotate
     
 
-    fa_pref = np.zeros_like(dV_dpsi)            # calculates the geometric scallings of the force
-    fd_pref = np.zeros_like(dV_dpsi)
+    fa_pref = cp.zeros_like(dV_dpsi)            # calculates the geometric scallings of the force
+    fd_pref = cp.zeros_like(dV_dpsi)
 
     fa_pref[valid] = (
         dV_dpsi[valid]
@@ -1224,29 +1231,29 @@ def torsion_forces(system):
     f_a = fa_pref[:, None] * n1                             # aligning the forces with the direction to the plane
     f_d = fd_pref[:, None] * n2
 
-    c1 = np.zeros_like(b2_sq)                               # calculates how much b and c lean along the middle bond
-    c2 = np.zeros_like(b2_sq)
+    c1 = cp.zeros_like(b2_sq)                               # calculates how much b and c lean along the middle bond
+    c2 = cp.zeros_like(b2_sq)
 
     c1[valid] = (
-        np.sum(b1[valid]*b2[valid],axis=1)
+        cp.sum(b1[valid]*b2[valid],axis=1)
         / b2_sq[valid]
     )
 
     c2[valid] = (
-        np.sum(b3[valid]*b2[valid],axis=1)
+        cp.sum(b3[valid]*b2[valid],axis=1)
         / b2_sq[valid]
     )
 
     f_b = (-(1.0 + c1)[:, None] * f_a + c2[:, None] * f_d)                # calculate the final forces of b and c, by taking into account the forces of a and d
     f_c = -(f_a + f_b + f_d)
 
-    np.add.at(system.forces, a1,  f_a)                         # apply force to atom a
-    np.add.at(system.forces, a2,  f_b)                         # apply force to atom b
-    np.add.at(system.forces, a3,  f_c)                         # apply force to atom c
-    np.add.at(system.forces, a4,  f_d)                         # apply force to atom d
+    cp.add.at(system.forces, a1,  f_a)                         # apply force to atom a
+    cp.add.at(system.forces, a2,  f_b)                         # apply force to atom b
+    cp.add.at(system.forces, a3,  f_c)                         # apply force to atom c
+    cp.add.at(system.forces, a4,  f_d)                         # apply force to atom d
 
     global pot_e_total
-    pot_e_total += np.sum(torsion_e)  # calculate the potential energy
+    pot_e_total += cp.sum(torsion_e)  # calculate the potential energy
 
     end_torsions = time.perf_counter()
     global time_taken_torsions
@@ -1268,7 +1275,7 @@ def non_bonded_forces(system):
 
     r_vec = system.minimum_image(rj - ri)
 
-    r = np.linalg.norm(r_vec, axis=1)
+    r = cp.linalg.norm(r_vec, axis=1)
 
     valid = r > 1e-12
 
@@ -1290,7 +1297,7 @@ def non_bonded_forces(system):
 
     lj_mask = r <= LJ_CUTOFF
 
-    if np.any(lj_mask):
+    if cp.any(lj_mask):
 
         lj_r = r[lj_mask]
         lj_hat = r_hat[lj_mask]
@@ -1317,8 +1324,8 @@ def non_bonded_forces(system):
 
         F_lj = -force_mag[:, None] * lj_hat
 
-        np.add.at(system.forces, lj_i,  F_lj)
-        np.add.at(system.forces, lj_j, -F_lj)
+        cp.add.at(system.forces, lj_i,  F_lj)
+        cp.add.at(system.forces, lj_j, -F_lj)
 
         U_lj = (
             4.0
@@ -1328,7 +1335,7 @@ def non_bonded_forces(system):
         )
 
         global pot_e_total
-        pot_e_total += np.sum(
+        pot_e_total += cp.sum(
             lj_scale_local * U_lj
         )
 
@@ -1336,7 +1343,7 @@ def non_bonded_forces(system):
 
     real_mask = r <= REAL_CUTOFF
 
-    if np.any(real_mask):
+    if cp.any(real_mask):
 
         real_r = r[real_mask]
         real_hat = r_hat[real_mask]
@@ -1352,7 +1359,7 @@ def non_bonded_forces(system):
         alpha_r = PME_ALPHA * real_r
 
         erfc_term = erfc(alpha_r)
-        exp_term = np.exp(-(alpha_r**2))
+        exp_term = cp.exp(-(alpha_r**2))
 
         force_mag = (
             COULOMB_CONSTANT
@@ -1361,7 +1368,7 @@ def non_bonded_forces(system):
             * (
                 erfc_term / (real_r**2)
                 +
-                (2.0 * PME_ALPHA / np.sqrt(np.pi))
+                (2.0 * PME_ALPHA / cp.sqrt(cp.pi))
                 * exp_term
                 / real_r
             )
@@ -1371,8 +1378,8 @@ def non_bonded_forces(system):
 
         F_coul = -force_mag[:, None] * real_hat
 
-        np.add.at(system.forces, real_i, F_coul)
-        np.add.at(system.forces, real_j, -F_coul)
+        cp.add.at(system.forces, real_i, F_coul)
+        cp.add.at(system.forces, real_j, -F_coul)
 
         U_coul = (
             scale
@@ -1383,7 +1390,7 @@ def non_bonded_forces(system):
             / real_r
         )
 
-        energy = np.sum(U_coul)
+        energy = cp.sum(U_coul)
 
         global real_space_PE
         real_space_PE += energy
@@ -1430,10 +1437,10 @@ def calc_physics():
     apply_exclusion_corrections(system)
     build_charge_grid(system)
 
-    Qk = np.fft.fftn(system.rho)
+    Qk = cp.fft.fftn(system.rho)
     Qk *= system.BC
 
-    potential = np.fft.ifftn(Qk).real
+    potential = cp.fft.ifftn(Qk).real
     potential *= PME_GRID**3
 
     reciprocal_interpolation(system, potential)
@@ -1473,6 +1480,10 @@ timestep_x = 100
 average_total_energy = 0
 max_displacement2 = 0
 initial_total_energy = 0
+
+
+
+
 
 # running simulation
 while True:
@@ -1522,11 +1533,15 @@ while True:
     if step == relax_steps:
         average_total_energy = 0
 
+
+    # Get positions onto np CPU arrays
+    positions_cpu = cp.asnumpy(system.positions)
+
     # find the displacement of the atom this timestep
     for i, atom in enumerate(system.atoms):
-        disp2 = system.minimum_image(system.positions[i] - atom.last_neighbour_reference)
+        disp2 = system.minimum_image_cpu(positions_cpu[i] - atom.last_neighbour_reference)
 
-        displacement2 = r2 = np.dot(disp2,disp2)
+        displacement2 = r2 = cp.dot(disp2,disp2)
 
         if displacement2 > max_displacement2:
             max_displacement2 = displacement2
@@ -1544,15 +1559,18 @@ while True:
 
     # update graphics once per frame
     for i in range(system.n_atoms):
-        balls[i].pos = vector(*system.positions[i])                                 # moves balls to current pos
+        balls[i].pos = vector(*positions_cpu[i])                                 # moves balls to current pos
 
+    bond_a_cpu = cp.asnumpy(system.bond_a)
+    bond_b_cpu = cp.asnumpy(system.bond_b)
     for bond_index in range(len(system.bond_a)):                              # update the bond visuals
-        a1 = system.bond_a[bond_index]
-        a2 = system.bond_b[bond_index]
-        bond_visuals[bond_index].pos = vector(*system.positions[a1])
+
+        a1 = bond_a_cpu[bond_index]
+        a2 = bond_b_cpu[bond_index]
+        bond_visuals[bond_index].pos = vector(*positions_cpu[a1])
 
         bond_visuals[bond_index].axis = vector(
-            *(system.positions[a2] - system.positions[a1])
+            *(positions_cpu[a2] - positions_cpu[a1])
         )
 
     # ----------------------------
@@ -1571,18 +1589,17 @@ while True:
     if step % timestep_x == 0:
 
         if step == (relax_steps+timestep_x):
-            initial_total_energy = total_e
+            initial_total_energy = float(cp.asnumpy(total_e))
 
         if step >= (relax_steps+timestep_x):
             average_total_energy = average_total_energy/timestep_x
             steps.append(step)
-            avg_sys_energy_values.append((average_total_energy - initial_total_energy) / abs(initial_total_energy))
+            avg_sys_energy_values.append(float(cp.asnumpy((average_total_energy - initial_total_energy) / abs(initial_total_energy))))
 
             line.set_data(steps, avg_sys_energy_values)
 
-            
-            ax.relim()              # Recalculate limits
-            ax.autoscale_view()     # Expand axes if needed
+            ax.relim()
+            ax.autoscale_view()
             plt.draw()
             plt.pause(0.001)
             average_total_energy = 0
