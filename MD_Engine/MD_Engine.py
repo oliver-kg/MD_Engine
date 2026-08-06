@@ -314,7 +314,7 @@ system.torsion_l = cp.asarray(system.torsion_l, dtype=cp.int32)
 system.torsion_terms = system.torsion_terms
 
 system.n_bonds = len(system.bond_a)
-
+system.n_angles = len(system.angle_i)
 
 # checks if a molecule has reached the box boundery and needs warping
 def wrap_molecules(system):
@@ -923,35 +923,6 @@ def apply_exclusion_corrections(system):
 def bond_forces(system):
     start_bonds = time.perf_counter()
 
-    '''
-    a = system.bond_a
-    b = system.bond_b
-    r0 = system.bond_r0
-    k = system.bond_k
-
-    # compute the bond vector and bond lengths
-    r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
-    r = cp.linalg.norm(r_vec, axis=1)
-
-    valid = r > 1e-12                              # avoid devide by zero just in case
-
-    a = a[valid]
-    b = b[valid]
-
-    r = r[valid]
-    r0 = r0[valid]
-    k = k[valid]
-
-    r_vec = r_vec[valid]
-
-    r_hat = r_vec / r[:, None]                           # bond direction
-
-    F = 2 * k[:, None] * (r - r0)[:, None] * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
-
-    cp.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
-    cp.add.at(system.forces, b, -F)
-    system.potential_energy += cp.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
-    '''
     with open("cuda/bond_kernel.cu") as f:
         code = f.read()
 
@@ -961,7 +932,6 @@ def bond_forces(system):
     )
 
     threads = 256
-
     blocks = (system.n_bonds + threads - 1) // threads
 
     system.potential_energy_gpu.fill(0)
@@ -976,7 +946,7 @@ def bond_forces(system):
         system.bond_b,
         system.bond_r0,
         system.bond_k,
-        PBC_BOX_LENGTH,
+        cp.float32(PBC_BOX_LENGTH),
         system.potential_energy_gpu,
         system.n_bonds
     )
@@ -984,14 +954,7 @@ def bond_forces(system):
     cp.cuda.runtime.deviceSynchronize()
 
     system.potential_energy += float(system.potential_energy_gpu[0])
-
-    print(cp.max(cp.abs(system.forces)))
-    print(cp.isnan(system.forces).any())
-    print(cp.isinf(system.forces).any())
-
-
     
-
     end_bonds = time.perf_counter()
     global time_taken_bonds
     time_taken_bonds += end_bonds - start_bonds
@@ -999,76 +962,38 @@ def bond_forces(system):
 def angle_forces(system):
     start_bond_angles = time.perf_counter()
 
-    ideal_ang = system.angle_theta0
-    atomA = system.angle_i
-    atomB = system.angle_j
-    atomC = system.angle_k
-    k = system.angle_kconst
+    with open("cuda/angle_kernel.cu") as f:
+        code = f.read()
 
-    BA = system.positions[atomA] - system.positions[atomB]                                # find vector of B to A
-    BC = system.positions[atomC] - system.positions[atomB]                                # find vector of B to C
+    angle_kernel = cp.RawKernel(
+        code,
+        "angle_kernel"
+    )
 
-    BA = system.minimum_image(BA)                                                 # update the coppy vectors
-    BC = system.minimum_image(BC)
-    
-    r_BA = cp.linalg.norm(BA, axis=1)                                                          # get the lengths, as force depends on direction, and how long the arms are
-    r_BC = cp.linalg.norm(BC, axis=1)
-    
-    # create valid filter
-    valid = (r_BA > 1e-12) & (r_BC > 1e-12)
+    threads = 256
+    blocks = (system.n_angles + threads - 1) // threads
 
-    atomA = atomA[valid]
-    atomB = atomB[valid]
-    atomC = atomC[valid]
+    system.potential_energy_gpu.fill(0)
 
-    BA = BA[valid]
-    BC = BC[valid]
+    angle_kernel(
+    (blocks,),
+    (threads,),
+    (
+        system.positions,
+        system.forces,
+        system.angle_i,
+        system.angle_j,
+        system.angle_k,
+        system.angle_theta0,
+        system.angle_kconst,
+        cp.float32(PBC_BOX_LENGTH),
+        system.potential_energy_gpu,
+        system.n_angles
+    )
+)
+    cp.cuda.runtime.deviceSynchronize()
 
-    r_BA = r_BA[valid]
-    r_BC = r_BC[valid]
-
-    ideal_ang = ideal_ang[valid]
-    k = k[valid]
-
-    
-    theta_cos = cp.sum(BA * BC, axis=1)                                             # calculate the dot product here
-    theta_cos /= r_BA * r_BC                                           
-    theta_cos = cp.clip(theta_cos, -1.0, 1.0)                                      # clamp for safety
-    theta = cp.arccos(theta_cos)                                                   
-
-    sin_theta = cp.sin(theta)                                                     
-    valid = cp.abs(sin_theta) > 1e-8                                                # to not divide by zero
-
-    atomA = atomA[valid]
-    atomB = atomB[valid]
-    atomC = atomC[valid]
-
-    BA = BA[valid]
-    BC = BC[valid]
-
-    r_BA = r_BA[valid]
-    r_BC = r_BC[valid]
-
-    ideal_ang = ideal_ang[valid]
-    k = k[valid]
-
-    theta = theta[valid]
-    theta_cos = theta_cos[valid]
-    sin_theta = sin_theta[valid]
-
-
-    dU_dtheta = k * (theta - ideal_ang)                                             # the error of the current angle vs ideal bond angle
-    f_a = -(dU_dtheta / sin_theta)[:, None] * ((theta_cos/(r_BA*r_BA))[:,None] * BA - (1.0 / (r_BA * r_BC))[:, None] * BC) # build the part of the force on A that changes the angle without streaching BA
-
-    f_c = -(dU_dtheta / sin_theta)[:, None] * ((theta_cos/(r_BC*r_BC))[:,None] * BC - (1.0 / (r_BA * r_BC))[:, None] * BA) # build the part of the force on C that changes the angle without streaching BC
-
-    f_b = -(f_a + f_c)                                                      # force to be applied on b to conserve energy
-
-    cp.add.at(system.forces, atomA, f_a)                                               # update the forces
-    cp.add.at(system.forces, atomB, f_b)
-    cp.add.at(system.forces, atomC, f_c)
-
-    system.potential_energy += cp.sum(0.5 * k * (theta - ideal_ang)**2)                # update the potential energy change from the angle
+    system.potential_energy += float(system.potential_energy_gpu[0])
 
     end_bond_angles = time.perf_counter()
     global time_taken_bond_angles

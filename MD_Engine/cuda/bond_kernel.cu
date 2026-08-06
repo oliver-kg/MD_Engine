@@ -1,4 +1,5 @@
 extern "C" __global__
+
 void bond_kernel(
     const float *positions, // the * is reciving the adress of the array itself on the GPU instead of an actual array
     float *forces,          // this makes the variable a pointer, pointing to the position in memory
@@ -8,7 +9,8 @@ void bond_kernel(
     const float *bond_k,
     float box_length,
     float *potential_energy,
-    int n_bonds)
+    int n_bonds
+)
 
 {
     // -------------------------------------------------
@@ -54,7 +56,7 @@ void bond_kernel(
     // -------------------------------------------------
     // 5. Minimum image - same as system.minimum_image()
     // -------------------------------------------------
-
+    
     dx -= box_length * roundf(dx / box_length);
     dy -= box_length * roundf(dy / box_length);
     dz -= box_length * roundf(dz / box_length);
@@ -95,7 +97,7 @@ void bond_kernel(
     atomicAdd(&forces[3 * b + 2], -Fz);
 
     // -------------------------------------------------
-    // 9. Bond energy - same as system.potential_energy += cp.sum(k * (r - r0)**2)
+    // 9. Bond potential energy - same as system.potential_energy += cp.sum(k * (r - r0)**2)
     // -------------------------------------------------
 
     float energy = k * (r - r0) * (r - r0);

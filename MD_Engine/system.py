@@ -93,6 +93,7 @@ class System:
         self.balls = []
         self.bond_visuals = []
         self.n_bonds = 0.0
+        self.n_angles = 0.0
 
     def minimum_image(self, r_vector):
         return r_vector - PBC_BOX_LENGTH * cp.round(r_vector / PBC_BOX_LENGTH)
