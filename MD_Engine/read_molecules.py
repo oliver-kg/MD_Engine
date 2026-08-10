@@ -1,4 +1,5 @@
 from vpython import vector
+import math
 
 atom_type = []
 atom_pos = []
@@ -61,17 +62,11 @@ f.close()
 f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_ITP.txt")
 
 
-#length_scale = 0.1530                                                                   # scale down the real values to make typical c-c as 1.0 engine units
-#k_scale = 40000
-#k_ang_scale = 4
-length_scale = 1                                                                   # scale down the real values to make typical c-c as 1.0 engine units
-k_scale = 1
-k_ang_scale = 1
-
 reading_atoms = False
 reading_bonds = False
 reading_angles = False
 reading_dihedrals = False
+
 for i in f:
     if "[ atoms ]" in i:                                                                 # start reading atoms list
         reading_atoms = True
@@ -111,28 +106,66 @@ for i in f:
     if (reading_atoms or reading_bonds or reading_angles or reading_dihedrals) and ";" in i:                 # skips the first line
         continue
 
+    # ----------------------------------------
+    # ATOMS
+    # ----------------------------------------
 
     if reading_atoms:
        atom_charge.append(i[36:45].strip())                                             # gets atom charge
+
+    # ----------------------------------------
+    # BONDS
+    # ----------------------------------------
 
     if reading_bonds:
         a_a.append(int(i[1:5].strip())-1)                                               # gets atom positions in a bond
         a_b.append(int(i[6:10].strip())-1)
         
         r = float(i[17:24].strip())                                                     # r value from file
-        r_0.append(r/length_scale)                                                      # scaled down version
+        r_0.append(r)                                                      
 
         k_file = float(i[27:37].strip())                                                # k value from file
-        k_engine.append(k_file/k_scale)                                                 # scaled down version
+
+        funct = float(i[14:15].strip())                                                 # gets the function number for the bond
+
+        if funct == 1:
+            k_engine.append(k_file / 2.0)                                               # for the GROMACS harmonic bond
+
+        elif funct == 2:
+            k_engine.append(k_file * r**2)                                              # for the GROMOS-96 fourth-power bond
+
+        else:
+            raise ValueError("Unsupported bond function type ", funct)
+
+    # ----------------------------------------
+    # ANGLES
+    # ----------------------------------------
 
     if reading_angles:
         a_i.append(int(i[1:5].strip())-1)                                               # get the three molecules involved in the angle
         a_j.append(int(i[6:10].strip())-1)
         a_k.append(int(i[11:15].strip())-1)
-        b_angle.append(float(i[23:30].strip()))                                         # get ideal angle
-        k_file = float(i[32:39].strip())
-        k_ang.append(k_file/k_ang_scale)                                                # get k value
 
+        theta0_deg = float(i[23:30].strip())
+        b_angle.append(theta0_deg)                                         # get ideal angle
+        theta0_rad = math.radians(theta0_deg)
+
+        k_file = float(i[32:39].strip())                                                # get k value
+
+        funct = float(i[19:20].strip())                                                 # gets the function number for the bond
+
+        if funct == 1:
+            k_ang.append(k_file)                                                        # for the normal GROMACS harmonic angle
+
+        elif funct == 2:
+            k_ang.append(k_file * math.sin(theta0_rad)**2)                                              # for the GROMOS-96 fourth-power bond
+
+        else:
+            raise ValueError("Unsupported bond function type ", funct)
+
+    # ----------------------------------------
+    # DIHEDRALS
+    # ----------------------------------------
         
     if reading_dihedrals:
         d_i.append(int(i[1:5].strip())-1)                                               # get the four molecules involved in the dihedral

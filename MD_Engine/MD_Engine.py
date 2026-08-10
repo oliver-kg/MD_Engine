@@ -249,11 +249,9 @@ def insert_molecule(template):
         system.torsion_k.append(k + atom_offset)
         system.torsion_l.append(l + atom_offset)
 
-        system.torsion_terms.append([
-            (k_dih,
-            n,
-            math.radians(phase))
-        ])
+        system.torsion_kterm.append(k_dih)
+        system.torsion_n.append(n)
+        system.torsion_delta.append(math.radians(phase))
 
 
 #create test molecules
@@ -266,27 +264,27 @@ for i in range(MOLECULE_NUMBERS):
 # create Vectors
 system.positions = cp.asarray(
     system.positions,
-    dtype=cp.float32
+    dtype=cp.float64
 )
 
 system.velocities = cp.asarray(
     system.velocities,
-    dtype=cp.float32
+    dtype=cp.float64
 )
 
 system.forces = cp.asarray(
     system.forces,
-    dtype=cp.float32
+    dtype=cp.float64
 )
 
 system.charges = cp.asarray(
     system.charges,
-    dtype=cp.float32
+    dtype=cp.float64
 )
 
 system.masses = cp.asarray(
     system.masses,
-    dtype=cp.float32
+    dtype=cp.float64
 )
 
 # Topology
@@ -296,25 +294,28 @@ system.n_atoms = len(system.positions)
 system.bond_a = cp.asarray(system.bond_a, dtype=cp.int32)
 system.bond_b = cp.asarray(system.bond_b, dtype=cp.int32)
 
-system.bond_r0 = cp.asarray(system.bond_r0, dtype=cp.float32)
-system.bond_k = cp.asarray(system.bond_k, dtype=cp.float32)
+system.bond_r0 = cp.asarray(system.bond_r0, dtype=cp.float64)
+system.bond_k = cp.asarray(system.bond_k, dtype=cp.float64)
 
 # Angles
 system.angle_i = cp.asarray(system.angle_i, dtype=cp.int32)
 system.angle_j = cp.asarray(system.angle_j, dtype=cp.int32)
 system.angle_k = cp.asarray(system.angle_k, dtype=cp.int32)
-system.angle_theta0 = cp.asarray(system.angle_theta0, dtype=cp.float32)
-system.angle_kconst = cp.asarray(system.angle_kconst, dtype=cp.float32)
+system.angle_theta0 = cp.asarray(system.angle_theta0, dtype=cp.float64)
+system.angle_kconst = cp.asarray(system.angle_kconst, dtype=cp.float64)
 
 # Torsions
 system.torsion_i = cp.asarray(system.torsion_i, dtype=cp.int32)
 system.torsion_j = cp.asarray(system.torsion_j, dtype=cp.int32)
 system.torsion_k = cp.asarray(system.torsion_k, dtype=cp.int32)
 system.torsion_l = cp.asarray(system.torsion_l, dtype=cp.int32)
-system.torsion_terms = system.torsion_terms
+system.torsion_kterm = cp.asarray(system.torsion_kterm,dtype=cp.float64)
+system.torsion_n = cp.asarray(system.torsion_n,dtype=cp.int32)
+system.torsion_delta = cp.asarray(system.torsion_delta,dtype=cp.float64)
 
 system.n_bonds = len(system.bond_a)
 system.n_angles = len(system.angle_i)
+system.n_torsions = len(system.torsion_i)
 
 # checks if a molecule has reached the box boundery and needs warping
 def wrap_molecules(system):
@@ -424,6 +425,7 @@ def build_exclusion_sets():
 bonded_12, bonded_13, bonded_14 = build_exclusion_sets()    # builds the sets to be used
 
 def build_neighbour_lists(system, neighbour_cutoff):
+
     cutoff2 = neighbour_cutoff**2
     positions_cpu = cp.asnumpy(system.positions)
     # clear out all of the previous neighbour lists
@@ -921,40 +923,39 @@ def apply_exclusion_corrections(system):
 
 
 def bond_forces(system):
+
     start_bonds = time.perf_counter()
 
-    with open("cuda/bond_kernel.cu") as f:
-        code = f.read()
+    a = system.bond_a
+    b = system.bond_b
+    r0 = system.bond_r0
+    k = system.bond_k
 
-    bond_kernel = cp.RawKernel(
-        code,
-        "bond_kernel"
-    )
+    # compute the bond vector and bond lengths
+    r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
+    r = cp.linalg.norm(r_vec, axis=1)
 
-    threads = 256
-    blocks = (system.n_bonds + threads - 1) // threads
+    valid = r > 1e-12                              # avoid devide by zero just in case
 
-    system.potential_energy_gpu.fill(0)
+    a = a[valid]
+    b = b[valid]
 
-    bond_kernel(
-    (blocks,),
-    (threads,),
-    (
-        system.positions,
-        system.forces,
-        system.bond_a,
-        system.bond_b,
-        system.bond_r0,
-        system.bond_k,
-        cp.float32(PBC_BOX_LENGTH),
-        system.potential_energy_gpu,
-        system.n_bonds
-    )
-)
-    cp.cuda.runtime.deviceSynchronize()
+    r = r[valid]
+    r0 = r0[valid]
+    k = k[valid]
 
-    system.potential_energy += float(system.potential_energy_gpu[0])
-    
+    r_vec = r_vec[valid]
+
+    r_hat = r_vec / r[:, None]                           # bond direction
+
+    F = 2 * k[:, None] * (r - r0)[:, None] * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
+
+    cp.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
+    cp.add.at(system.forces, b, -F)
+    system.potential_energy += cp.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
+
+
+
     end_bonds = time.perf_counter()
     global time_taken_bonds
     time_taken_bonds += end_bonds - start_bonds
@@ -986,7 +987,7 @@ def angle_forces(system):
         system.angle_k,
         system.angle_theta0,
         system.angle_kconst,
-        cp.float32(PBC_BOX_LENGTH),
+        cp.float64(PBC_BOX_LENGTH),
         system.potential_energy_gpu,
         system.n_angles
     )
@@ -1002,106 +1003,40 @@ def angle_forces(system):
 def torsion_forces(system):
     start_torsions = time.perf_counter()
     
-    a1 = system.torsion_i                           # 4 atoms involved in the torsion bond
-    a2 = system.torsion_j 
-    a3 = system.torsion_k
-    a4 = system.torsion_l
+    with open("cuda/torsion_kernel.cu") as f:
+        code = f.read()
 
-    b1 = system.positions[a2] - system.positions[a1]      # directions of the three bonds
-    b2 = system.positions[a3] - system.positions[a2]
-    b3 = system.positions[a4] - system.positions[a3]
-
-    b1 = system.minimum_image(b1)                 # update the vectors of coppies
-    b2 = system.minimum_image(b2)
-    b3 = system.minimum_image(b3)
-
-    n1 = cp.cross(b1, b2)                      # normal to plane ABC
-    n2 = cp.cross(b2, b3)                      # normal to plane BCD
-
-    eps = 1e-12
-    n1_sq = cp.sum(n1*n1, axis=1)
-    n2_sq = cp.sum(n2*n2, axis=1)
-
-    b2_sq = cp.sum(b2*b2, axis=1)
-    b2_mag = cp.linalg.norm(b2, axis=1)
-
-    valid = ((n1_sq > eps) & (n2_sq > eps) & (b2_sq > eps))    # makes sure small values dont blow the system up
-
-    x = cp.sum(n1*n2, axis=1)
-
-
-    b2_hat = cp.zeros_like(b2)
-    b2_hat[valid] = (
-        b2[valid]
-        / b2_mag[valid, None]
-    )
-    cross12 = cp.cross(n1,n2)
-
-    y = cp.sum(
-        cross12 * b2_hat,
-        axis=1
+    torsion_kernel = cp.RawKernel(
+        code,
+        "torsion_kernel"
     )
 
-    psi = cp.arctan2(y, x)                  # caluclate current psi angle 
+    threads = 256
+    blocks = (system.n_torsions + threads - 1) // threads
 
-    n_torsions = len(system.torsion_i)
+    system.potential_energy_gpu.fill(0)
 
-    torsion_e = cp.zeros(n_torsions)
-    dV_dpsi = cp.zeros(n_torsions)
-    
-    for i, terms in enumerate(system.torsion_terms):        # system.torsion_terms is a ragged list, and is nasty to vectorise cleanly
-
-        if not valid[i]:
-            continue
-
-        psi_i = psi[i]
-
-
-        for k_term, n, delta in terms:                             # repeats for each term, updating the cos graph
-            torsion_e[i] += k_term * (1 + cp.cos(n * psi_i - delta))   # calculate the potential energy
-            dV_dpsi[i] -= k_term * n * cp.sin(n * psi_i - delta)            # how strongly the torsion wants to rotate
-    
-
-    fa_pref = cp.zeros_like(dV_dpsi)            # calculates the geometric scallings of the force
-    fd_pref = cp.zeros_like(dV_dpsi)
-
-    fa_pref[valid] = (
-        dV_dpsi[valid]
-        * b2_mag[valid]
-        / n1_sq[valid]
+    torsion_kernel(
+    (blocks,),
+    (threads,),
+    (
+        system.positions,
+        system.forces,
+        system.torsion_i,
+        system.torsion_j,
+        system.torsion_k,
+        system.torsion_l,
+        system.torsion_kterm,
+        system.torsion_n,
+        system.torsion_delta,
+        cp.float64(PBC_BOX_LENGTH),
+        system.potential_energy_gpu,
+        system.n_torsions
     )
+)
+    cp.cuda.runtime.deviceSynchronize()
 
-    fd_pref[valid] = (
-        -dV_dpsi[valid]
-        * b2_mag[valid]
-        / n2_sq[valid]
-    )
-
-    f_a = fa_pref[:, None] * n1                             # aligning the forces with the direction to the plane
-    f_d = fd_pref[:, None] * n2
-
-    c1 = cp.zeros_like(b2_sq)                               # calculates how much b and c lean along the middle bond
-    c2 = cp.zeros_like(b2_sq)
-
-    c1[valid] = (
-        cp.sum(b1[valid]*b2[valid],axis=1)
-        / b2_sq[valid]
-    )
-
-    c2[valid] = (
-        cp.sum(b3[valid]*b2[valid],axis=1)
-        / b2_sq[valid]
-    )
-
-    f_b = (-(1.0 + c1)[:, None] * f_a + c2[:, None] * f_d)                # calculate the final forces of b and c, by taking into account the forces of a and d
-    f_c = -(f_a + f_b + f_d)
-
-    cp.add.at(system.forces, a1,  f_a)                         # apply force to atom a
-    cp.add.at(system.forces, a2,  f_b)                         # apply force to atom b
-    cp.add.at(system.forces, a3,  f_c)                         # apply force to atom c
-    cp.add.at(system.forces, a4,  f_d)                         # apply force to atom d
-
-    system.potential_energy += cp.sum(torsion_e)  # calculate the potential energy
+    system.potential_energy += float(system.potential_energy_gpu[0])
 
     end_torsions = time.perf_counter()
     global time_taken_torsions
@@ -1250,7 +1185,7 @@ def non_bonded_forces(system):
 def calc_physics():
 
     system.potential_energy = 0.0
-    system.potential_energy_gpu = cp.array([0.0], dtype=cp.float32)
+    system.potential_energy_gpu = cp.array([0.0], dtype=cp.float64)
     system.real_space_PE = 0.0
     system.reciprocal_PE = 0.0
 
@@ -1280,8 +1215,8 @@ def calc_physics():
     
     start_PME = time.perf_counter()
 
-    apply_exclusion_corrections(system)
-    build_charge_grid(system)
+    #apply_exclusion_corrections(system)
+    #build_charge_grid(system)
 
     Qk = cp.fft.fftn(system.rho)
     Qk *= system.BC
@@ -1289,10 +1224,10 @@ def calc_physics():
     potential = cp.fft.ifftn(Qk).real
     potential *= PME_GRID**3
 
-    reciprocal_interpolation(system, potential)
+    #reciprocal_interpolation(system, potential)
 
     # account for the self energy shift
-    system.potential_energy += PME_SELF_ENERGY
+    #system.potential_energy += PME_SELF_ENERGY
 
     end_PME = time.perf_counter()
     global time_taken_PME
@@ -1313,13 +1248,14 @@ def calc_physics():
 
 # initial forces and model and neighbour list before simulation starts - need valid forces before starting
 system.forces.fill(0.0)
+build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
 system.potential_energy = calc_physics()
 render_initial_model()
-build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
 
-prev_step_count = 0
-relax_steps = 4000
-timestep_x = 100
+
+last_neighbour_build_step = 0
+relax_steps = 500
+timestep_x = 1
 max_displacement2 = 0
 
 # running simulation
@@ -1384,8 +1320,8 @@ while True:
             max_displacement2 = displacement2
 
     if max_displacement2 > (SKIN_CUTOFF / 2)**2:
-        prev_step_count = system.step - prev_step_count
-        print(f"New List After {prev_step_count} Steps")
+        print(f"New List After "f"{system.step - last_neighbour_build_step} Steps")
+        last_neighbour_build_step = system.step
         build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
         max_displacement2 = 0
         
@@ -1427,7 +1363,7 @@ while True:
         if system.step >= (relax_steps+timestep_x):
             system.average_total_energy = system.average_total_energy/timestep_x
             system.steps.append(system.step)
-            system.avg_sys_energy_values.append(float(cp.asnumpy((system.average_total_energy - system.initial_total_energy) / abs(system.initial_total_energy))))
+            system.avg_sys_energy_values.append(float(cp.asnumpy(system.total_energy)))
 
             line.set_data(system.steps, system.avg_sys_energy_values)
 
@@ -1436,7 +1372,7 @@ while True:
             plt.draw()
             plt.pause(0.001)
             system.average_total_energy = 0
-        
+        '''
         print()
         print(f"Step: {system.step}")
         print(f"KE: {system.kinetic_energy:.6f}  PE: {system.potential_energy:.6f}  Total: {system.total_energy:.6f}")
@@ -1451,7 +1387,7 @@ while True:
         print(f"Time By % of non_bonded: {((time_taken_non_bonded/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of total forces: {((time_taken_all_foces/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of other: {((time_other/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
-        
+        '''
         time_taken_all_foces = 0
         time_taken_exclusions = 0
         time_taken_bonds = 0

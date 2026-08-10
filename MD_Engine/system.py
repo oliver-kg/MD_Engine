@@ -42,6 +42,7 @@ class System:
         self.bond_b = []
         self.bond_r0 = []
         self.bond_k = []
+        self.step = 0
 
         # Angles
 
@@ -50,6 +51,7 @@ class System:
         self.angle_k = []
         self.angle_theta0 = []
         self.angle_kconst = []
+        self.n_angles = 0
 
         # Torsions
 
@@ -57,7 +59,10 @@ class System:
         self.torsion_j = []
         self.torsion_k = []
         self.torsion_l = []
-        self.torsion_terms = []
+        self.torsion_kterm  = []
+        self.torsion_n = []
+        self.torsion_delta =[]
+        self.n_torsions = 0
 
         # Non Bonded loop
         self.pair_i = cp.empty(0, dtype=cp.int32)
@@ -74,8 +79,8 @@ class System:
         self.BC = None
 
         # Energies
-        self.potential_energy = cp.array([0.0], dtype=cp.float32)
-        self.potential_energy_gpu = cp.array([0.0], dtype=cp.float32)
+        self.potential_energy = cp.array([0.0], dtype=cp.float64)
+        self.potential_energy_gpu = cp.array([0.0], dtype=cp.float64)
         self.kinetic_energy = 0.0
         self.real_space_PE = 0.0
         self.reciprocal_PE = 0.0
@@ -87,13 +92,11 @@ class System:
         self.average_total_energy = 0.0
         self.steps = []
         self.avg_sys_energy_values = []
-        self.step = 0
 
         # Visuals
         self.balls = []
         self.bond_visuals = []
-        self.n_bonds = 0.0
-        self.n_angles = 0.0
+        self.n_bonds = 0
 
     def minimum_image(self, r_vector):
         return r_vector - PBC_BOX_LENGTH * cp.round(r_vector / PBC_BOX_LENGTH)
