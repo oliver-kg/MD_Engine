@@ -28,6 +28,14 @@ ph = []
 k_dih = []
 n = []
 
+# LJ force-field information
+lj_c6 = []
+lj_c12 = []
+
+# ff_nonbonded information
+ff_atom_types = []
+
+
 
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/1,6-HEXANEDIAMINE/1,6-HEXANEDIAMINE_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_PDB.txt
@@ -35,9 +43,9 @@ n = []
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_PDB.txt
-f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_PDB.txt", "r")             # opens the pos file of the molecule
+PDB_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt", "r")             # opens the pos file of the molecule
 
-for i in f:
+for i in PDB_file:
     if "CONECT" in i:
         break
 
@@ -51,7 +59,7 @@ for i in f:
     z_pos = float(i[47:54].strip())
     atom_pos.append(vector(x_pos/10, y_pos/10, z_pos/10))                                                # put position vector into array
 
-f.close()
+PDB_file.close()
 
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/1,6-HEXANEDIAMINE/1,6-HEXANEDIAMINE_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Butanol/butanol_ITP.txt
@@ -59,7 +67,7 @@ f.close()
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_ITP.txt
-f = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_ITP.txt")
+ITP_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt")
 
 
 reading_atoms = False
@@ -67,7 +75,7 @@ reading_bonds = False
 reading_angles = False
 reading_dihedrals = False
 
-for i in f:
+for i in ITP_file:
     if "[ atoms ]" in i:                                                                 # start reading atoms list
         reading_atoms = True
         continue
@@ -112,6 +120,9 @@ for i in f:
 
     if reading_atoms:
        atom_charge.append(i[36:45].strip())                                             # gets atom charge
+
+       ff_atom_types.append(i[6:11].replace(" ", ""))                              # strip only the white spaces
+
 
     # ----------------------------------------
     # BONDS
@@ -175,3 +186,119 @@ for i in f:
         ph.append(float(i[28:35].strip()))                                              # get phi angle
         k_dih.append(float(i[38:44].strip()))                                           # get k val
         n.append(int(i[47:49].strip()))                                               # get n
+
+ITP_file.close()
+
+# -------------------------------------------------------------------------------------
+# FORCE FIELD STUFF FOR INDIVIDUAL LJ_SIGMA and LJ_EPSILON
+# -------------------------------------------------------------------------------------
+
+ff_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/ffnonbonded_ITP.txt")
+
+used_ff_types = set(ff_atom_types)
+
+required_lj_pairs = set()
+
+for type_i in used_ff_types:
+    for type_j in used_ff_types:
+
+        pair = tuple(sorted((type_i, type_j)))
+
+        required_lj_pairs.add(pair)
+
+
+ff_atomtypes = {}
+ff_nonbond_params = {}
+
+reading_atomtypes = False
+reading_nonbond_params = False
+
+with ff_file as f:
+
+    for i, line in enumerate(f):
+
+        line = line.strip()
+
+        if not line or line.startswith(";"):
+            continue
+
+        # atom types
+        if line == "[ atomtypes ]":
+            reading_atomtypes = True
+            continue
+
+        if line.startswith("[") and line != "[ atomtypes ]":
+            reading_atomtypes = False
+
+        # nonbonded params
+        if line == "[ nonbond_params ]":
+            reading_nonbond_params = True
+            continue
+
+        if line.startswith("[") and line != "[ nonbond_params ]":
+            reading_nonbond_params = False
+
+        # atom types
+        if reading_atomtypes:
+
+            fields = line.split()
+
+            if len(fields) < 7:
+                continue
+            if fields[0] not in used_ff_types:
+                continue
+
+
+
+            C6 = float(fields[5])
+            C12 = float(fields[6])
+
+            ff_atomtypes[fields[0]] = (C6, C12)
+
+        # nonbonded params
+        if reading_nonbond_params:
+        
+            fields = line.split()
+
+            if len(fields) < 5:
+                continue
+
+            type_i = fields[0]
+            type_j = fields[1]
+
+            choice = tuple(sorted((type_i, type_j)))
+
+
+            if choice not in required_lj_pairs:
+                continue
+
+            C6 = float(fields[3])
+            C12 = float(fields[4])
+
+            pair = tuple(sorted((type_i, type_j)))
+
+            ff_nonbond_params[pair] = (C6, C12)
+
+        
+resolved_lj_params = {}
+
+for pair in required_lj_pairs:
+
+    if pair in ff_nonbond_params:
+        resolved_lj_params[pair] = ff_nonbond_params[pair]
+        source = "nonbond_params"
+
+    else:
+        type_i, type_j = pair
+
+        if type_i == type_j:
+            if type_i in ff_atomtypes:
+                resolved_lj_params[pair] = ff_atomtypes[type_i]
+                source = "atomtypes"
+            else:
+                raise ValueError(
+                    f"No atomtype parameters for {type_i}"
+                )
+
+        else:
+            source = "NOT RESOLVED"

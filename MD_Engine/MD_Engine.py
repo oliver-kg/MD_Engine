@@ -43,8 +43,8 @@ plt.ion()  # Interactive mode
 fig, ax = plt.subplots()
 line, = ax.plot([], [], lw=2)
 ax.set_xlabel("Timestep")
-ax.set_ylabel("Average Relative Fractional Error")
-ax.set_title("Average Relative Fractional Error (100-step average)")
+ax.set_ylabel("Average Total System Energy")
+ax.set_title("Average Total System Energy (x-step average)")
 ax.grid(True)
 
 # Get screen dimensions
@@ -478,17 +478,26 @@ def build_neighbour_lists(system, neighbour_cutoff):
     system.pair_coulomb_scale = cp.asarray(pair_coulomb_scale, dtype=np.float64)
 
 def find_cell_of_atom(atom_pos):
-    return (
-        math.floor(atom_pos[0] / CELL_SIZE),
-        math.floor(atom_pos[1] / CELL_SIZE),
-        math.floor(atom_pos[2] / CELL_SIZE)
 
+    # Convert coordinates from [-L/2, L/2)
+    # into [0, L)
+    x = atom_pos[0] + HALF_BOX
+    y = atom_pos[1] + HALF_BOX
+    z = atom_pos[2] + HALF_BOX
+
+    return (
+        int(math.floor(x / CELL_SIZE)) % NUM_CELLS,
+        int(math.floor(y / CELL_SIZE)) % NUM_CELLS,
+        int(math.floor(z / CELL_SIZE)) % NUM_CELLS
     )
 
+
 def build_cell_list(system, positions_cpu):
+
     cells = {}
 
     for i in range(system.n_atoms):
+
         cell = find_cell_of_atom(positions_cpu[i])
 
         if cell not in cells:
@@ -499,12 +508,18 @@ def build_cell_list(system, positions_cpu):
     return cells
 
 def neighbouring_cells(cell):
-    x,y,z = cell
+
+    x, y, z = cell
 
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
             for dz in (-1, 0, 1):
-                yield (x+dx, y+dy, z+dz)
+
+                yield (
+                    (x + dx) % NUM_CELLS,
+                    (y + dy) % NUM_CELLS,
+                    (z + dz) % NUM_CELLS
+                )
 
 
 # ---------------------------------------- NON-BONDED CALCS ----------------------------------------
@@ -1060,6 +1075,69 @@ def non_bonded_forces(system):
 
     r = cp.linalg.norm(r_vec, axis=1)
 
+    closest = cp.argmin(r)
+
+    closest_i = int(pair_i[closest])
+    closest_j = int(pair_j[closest])
+    closest_r = float(r[closest])
+
+    if system.step % 10 == 0 and closest_r < 0.35:
+
+        q1_debug = float(qi[closest])
+        q2_debug = float(qj[closest])
+
+        alpha_r_debug = PME_ALPHA * closest_r
+
+        erfc_debug = math.erfc(alpha_r_debug)
+        exp_debug = math.exp(-(alpha_r_debug ** 2))
+
+        coul_force_debug = (
+            COULOMB_CONSTANT
+            * q1_debug
+            * q2_debug
+            * (
+                erfc_debug / closest_r**2
+                +
+                (2 * PME_ALPHA / math.sqrt(math.pi))
+                * exp_debug / closest_r
+            )
+        )
+
+        sr = LJ_SIGMA / closest_r
+
+        lj_force_debug = (
+            24 * LJ_EPSILON
+            * (2 * sr**12 - sr**6)
+            / closest_r
+        )
+
+        coul_energy_debug = (
+            COULOMB_CONSTANT
+            * q1_debug
+            * q2_debug
+            * erfc_debug
+            / closest_r
+        )
+
+        lj_energy_debug = (
+            4 * LJ_EPSILON
+            * (sr**12 - sr**6)
+            - LJ_ENERGY_SHIFT
+        )
+
+        print(
+            f"STEP {system.step} | "
+            f"PAIR {closest_i}-{closest_j} | "
+            f"r={closest_r:.6f} | "
+            f"FC={coul_force_debug:.3e} | "
+            f"FLJ={lj_force_debug:.3e} | "
+            f"C_E={coul_energy_debug:.3e} | "
+            f"LJ_E={lj_energy_debug:.3e}"
+        )
+
+
+
+
     valid = r > 1e-12
 
     pair_i = pair_i[valid]
@@ -1077,7 +1155,7 @@ def non_bonded_forces(system):
     r = r[valid]
 
     r_hat = r_vec / r[:, None]
-
+    
     lj_mask = r <= LJ_CUTOFF
 
     if cp.any(lj_mask):
@@ -1120,9 +1198,9 @@ def non_bonded_forces(system):
         system.potential_energy += cp.sum(
             lj_scale_local * U_lj
         )
-
+    
     # Coulomb Force
-
+    
     real_mask = r <= REAL_CUTOFF
 
     if cp.any(real_mask):
@@ -1176,6 +1254,7 @@ def non_bonded_forces(system):
 
         system.real_space_PE += energy
         system.potential_energy += energy
+    
 
 
 # ---------------------------------------- PHYSICS LOOP ----------------------------------------
@@ -1215,8 +1294,8 @@ def calc_physics():
     
     start_PME = time.perf_counter()
 
-    #apply_exclusion_corrections(system)
-    #build_charge_grid(system)
+    apply_exclusion_corrections(system)
+    build_charge_grid(system)
 
     Qk = cp.fft.fftn(system.rho)
     Qk *= system.BC
@@ -1224,10 +1303,10 @@ def calc_physics():
     potential = cp.fft.ifftn(Qk).real
     potential *= PME_GRID**3
 
-    #reciprocal_interpolation(system, potential)
+    reciprocal_interpolation(system, potential)
 
     # account for the self energy shift
-    #system.potential_energy += PME_SELF_ENERGY
+    system.potential_energy += PME_SELF_ENERGY
 
     end_PME = time.perf_counter()
     global time_taken_PME
@@ -1254,7 +1333,7 @@ render_initial_model()
 
 
 last_neighbour_build_step = 0
-relax_steps = 500
+relax_steps = 250
 timestep_x = 1
 max_displacement2 = 0
 
@@ -1372,6 +1451,8 @@ while True:
             plt.draw()
             plt.pause(0.001)
             system.average_total_energy = 0
+
+            print(f"KE: {system.kinetic_energy:.6f}  PE: {system.potential_energy:.6f}  Total: {system.total_energy:.6f}")
         '''
         print()
         print(f"Step: {system.step}")

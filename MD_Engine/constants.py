@@ -3,7 +3,7 @@ from vpython import vector
 # PME PARAMETERS
 # ------------------------
 
-PME_ALPHA = 0.35
+PME_ALPHA = 3.5
 PME_GRID = 32
 BSPLINE_ORDER = 4
 
@@ -12,7 +12,7 @@ BSPLINE_ORDER = 4
 # ------------------------
 # LJ
 LJ_SIGMA = 0.3
-LJ_EPSILON = 0.02
+LJ_EPSILON = 0.08
 LJ_CUTOFF = 2.5 * LJ_SIGMA                                                                  # compute LJ forces only within a cutoff reigon, as forces are too weak anyway
 LJ_ENERGY_SHIFT = 4 * LJ_EPSILON * ((LJ_SIGMA / LJ_CUTOFF)**12 - (LJ_SIGMA / LJ_CUTOFF)**6) # used so the LJ potential smoothly becomes 0 instead of cutting off
 
@@ -26,11 +26,17 @@ SKIN_CUTOFF = 0.1
 # SIMULATION PARAMETERS
 # ------------------------
 
-TIME_STEP = 0.0002
-PBC_BOX_LENGTH = 8
-MOLECULE_NUMBERS = 10
-NEIGHBOUR_CUTOFF = SKIN_CUTOFF+REAL_CUTOFF
+TIME_STEP = 0.00005
+PBC_BOX_LENGTH = 3
+MOLECULE_NUMBERS = 3
+NEIGHBOUR_CUTOFF = SKIN_CUTOFF + REAL_CUTOFF
 CELL_SIZE = NEIGHBOUR_CUTOFF
+
+NUM_CELLS = max(1, int(PBC_BOX_LENGTH // NEIGHBOUR_CUTOFF))
+
+CELL_SIZE = PBC_BOX_LENGTH / NUM_CELLS
+HALF_BOX = PBC_BOX_LENGTH * 0.5
+
 
 
 ELEMENTS = {
