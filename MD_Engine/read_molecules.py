@@ -1,5 +1,7 @@
 from vpython import vector
 import math
+import numpy as np
+import system
 
 atom_type = []
 atom_pos = []
@@ -33,7 +35,7 @@ lj_c6 = []
 lj_c12 = []
 
 # ff_nonbonded information
-ff_atom_types = []
+ff_atom_type = []
 
 
 
@@ -43,7 +45,7 @@ ff_atom_types = []
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_PDB.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_PDB.txt
-PDB_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_PDB.txt", "r")             # opens the pos file of the molecule
+PDB_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_PDB.txt", "r")             # opens the pos file of the molecule
 
 for i in PDB_file:
     if "CONECT" in i:
@@ -67,7 +69,7 @@ PDB_file.close()
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/BigMolecule/BigMolecule_ITP.txt
 #C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_ITP.txt
-ITP_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Cholestane/Cholestane_ITP.txt")
+ITP_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/Water/Water_ITP.txt")
 
 
 reading_atoms = False
@@ -121,7 +123,7 @@ for i in ITP_file:
     if reading_atoms:
        atom_charge.append(i[36:45].strip())                                             # gets atom charge
 
-       ff_atom_types.append(i[6:11].replace(" ", ""))                              # strip only the white spaces
+       ff_atom_type.append(i[6:11].replace(" ", ""))                              # strip only the white spaces
 
 
     # ----------------------------------------
@@ -195,7 +197,7 @@ ITP_file.close()
 
 ff_file = open(r"C:/Dev/projects/MD_Engine/MD_Engine/Molecule_Files/ffnonbonded_ITP.txt")
 
-used_ff_types = set(ff_atom_types)
+used_ff_types = set(ff_atom_type)
 
 required_lj_pairs = set()
 
@@ -302,3 +304,40 @@ for pair in required_lj_pairs:
 
         else:
             source = "NOT RESOLVED"
+
+lj_pair_params = {}
+
+lj_pair_params = resolved_lj_params.copy()
+ff_type_to_id = {}
+
+for ff_type in used_ff_types:
+    ff_type_to_id[ff_type] = len(ff_type_to_id)
+
+id_to_ff_type = {
+    value: key
+    for key, value in ff_type_to_id.items()
+}
+
+num_ff_types = len(ff_type_to_id)
+
+lj_c6_matrix = np.zeros(
+    (num_ff_types, num_ff_types),
+    dtype=np.float64
+)
+
+lj_c12_matrix = np.zeros(
+    (num_ff_types, num_ff_types),
+    dtype=np.float64
+)
+for pair, (C6, C12) in lj_pair_params.items():
+
+    type_i, type_j = pair
+
+    i = ff_type_to_id[type_i]
+    j = ff_type_to_id[type_j]
+
+    lj_c6_matrix[i, j] = C6
+    lj_c6_matrix[j, i] = C6
+
+    lj_c12_matrix[i, j] = C12
+    lj_c12_matrix[j, i] = C12

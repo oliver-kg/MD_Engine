@@ -1,16 +1,16 @@
 from vpython import *                   # imports all I use
 import tkinter as tk
 import math
-import read_molecules
 import time
 from random import uniform
 import numpy as np
 import cupy as cp
-from cupyx.scipy.special import erfc
+from cupyx.scipy.special import erfc, erf
 import matplotlib.pyplot as plt
 
 from system import System, Atom, Molecule, ELEMENTS
 from constants import *
+import read_molecules
 
 
 # ------------------------
@@ -122,11 +122,13 @@ def load_molecule_template():
     atom_pos = []
     atom_charge = []
     atom_type = []
+    ff_atom_type = []
 
     for ind in read_molecules.atom_index:
         atom_pos.append(read_molecules.atom_pos[ind])
         atom_charge.append(read_molecules.atom_charge[ind])
         atom_type.append(read_molecules.atom_type[ind])
+        ff_atom_type.append(read_molecules.ff_atom_type[ind])
 
     bonds = []
 
@@ -162,11 +164,11 @@ def load_molecule_template():
             read_molecules.ph[ind]
         ))
 
-    return atom_pos, atom_charge, atom_type, bonds, angles, torsions
+    return atom_pos, atom_charge, atom_type, ff_atom_type, bonds, angles, torsions
 
 def insert_molecule(template):
 
-    atom_pos, atom_charge, atom_type, bond_data, angle_data, torsion_data = template
+    atom_pos, atom_charge, atom_type, ff_atom_type, bond_data, angle_data, torsion_data = template
 
     # Where this copy will go
     offset_position = vector(
@@ -181,7 +183,7 @@ def insert_molecule(template):
     atom_indices = []
 
     # Create atoms
-    for pos, charge, atom_type_name in zip(atom_pos,atom_charge,atom_type):
+    for pos, charge, atom_type_name, ff_type_name in zip(atom_pos, atom_charge, atom_type, ff_atom_type):
 
         index = len(system.atoms)
 
@@ -213,6 +215,10 @@ def insert_molecule(template):
         ])
 
         system.charges.append(float(charge))
+
+        system.ff_atom_types.append(ff_type_name)
+
+        system.ff_type_ids.append(system.ff_type_to_id[ff_type_name])
 
         system.masses.append(
             ELEMENTS[atom_type_name]["mass"]
@@ -254,11 +260,29 @@ def insert_molecule(template):
         system.torsion_delta.append(math.radians(phase))
 
 
+system.ff_type_to_id = read_molecules.ff_type_to_id
+system.num_ff_types = read_molecules.num_ff_types
+
+system.lj_c6_matrix = cp.asarray(
+    read_molecules.lj_c6_matrix,
+    dtype=cp.float64
+)
+
+system.lj_c12_matrix = cp.asarray(
+    read_molecules.lj_c12_matrix,
+    dtype=cp.float64
+)
+
+
 #create test molecules
 water = load_molecule_template()
 
 for i in range(MOLECULE_NUMBERS):
     insert_molecule(water)
+
+
+
+
 
 
 # create Vectors
@@ -287,6 +311,35 @@ system.masses = cp.asarray(
     dtype=cp.float64
 )
 
+
+lj_c6_cpu = read_molecules.lj_c6_matrix
+lj_c12_cpu = read_molecules.lj_c12_matrix
+
+lj_shift_matrix = np.zeros(
+    (read_molecules.num_ff_types, read_molecules.num_ff_types),
+    dtype=np.float64
+)
+
+for i in range(system.num_ff_types):
+    for j in range(system.num_ff_types):
+
+        C6 = lj_c6_cpu[i, j]
+        C12 = lj_c12_cpu[i, j]
+
+        lj_shift_matrix[i, j] = (
+            C12 / LJ_CUTOFF**12
+            - C6 / LJ_CUTOFF**6
+        )
+
+system.lj_shift_matrix = cp.asarray(
+    lj_shift_matrix,
+    dtype=cp.float64
+)
+
+system.ff_type_ids = cp.asarray(
+    system.ff_type_ids,
+    dtype=cp.int32
+)
 # Topology
 system.n_atoms = len(system.positions)
 
@@ -316,6 +369,8 @@ system.torsion_delta = cp.asarray(system.torsion_delta,dtype=cp.float64)
 system.n_bonds = len(system.bond_a)
 system.n_angles = len(system.angle_i)
 system.n_torsions = len(system.torsion_i)
+
+
 
 # checks if a molecule has reached the box boundery and needs warping
 def wrap_molecules(system):
@@ -1062,6 +1117,15 @@ def non_bonded_forces(system):
     pair_i = system.pair_i
     pair_j = system.pair_j
 
+    # Get force-field type IDs for every neighbour pair
+    type_i = system.ff_type_ids[pair_i]
+    type_j = system.ff_type_ids[pair_j]
+
+    # Get LJ parameters for every neighbour pair
+    pair_C6 = system.lj_c6_matrix[type_i, type_j]
+    pair_C12 = system.lj_c12_matrix[type_i, type_j]
+    pair_shift = system.lj_shift_matrix[type_i, type_j]
+
     ri = system.positions[pair_i]
     rj = system.positions[pair_j]
 
@@ -1075,66 +1139,48 @@ def non_bonded_forces(system):
 
     r = cp.linalg.norm(r_vec, axis=1)
 
-    closest = cp.argmin(r)
+    lj_candidate = (pair_C6 > 0) | (pair_C12 > 0)
 
-    closest_i = int(pair_i[closest])
-    closest_j = int(pair_j[closest])
-    closest_r = float(r[closest])
+    if cp.any(lj_candidate):
 
-    if system.step % 10 == 0 and closest_r < 0.35:
+        lj_indices = cp.where(lj_candidate)[0]
 
-        q1_debug = float(qi[closest])
-        q2_debug = float(qj[closest])
+        closest_lj_local = cp.argmin(r[lj_candidate])
+        closest = lj_indices[closest_lj_local]
 
-        alpha_r_debug = PME_ALPHA * closest_r
+        closest_i = int(pair_i[closest])
+        closest_j = int(pair_j[closest])
+        closest_r = float(r[closest])
 
-        erfc_debug = math.erfc(alpha_r_debug)
-        exp_debug = math.exp(-(alpha_r_debug ** 2))
+        closest_C6 = float(pair_C6[closest])
+        closest_C12 = float(pair_C12[closest])
+        closest_shift = float(pair_shift[closest])
 
-        coul_force_debug = (
-            COULOMB_CONSTANT
-            * q1_debug
-            * q2_debug
-            * (
-                erfc_debug / closest_r**2
-                +
-                (2 * PME_ALPHA / math.sqrt(math.pi))
-                * exp_debug / closest_r
-            )
-        )
-
-        sr = LJ_SIGMA / closest_r
+    if system.step % 10 == 0 and closest_r < LJ_CUTOFF:
 
         lj_force_debug = (
-            24 * LJ_EPSILON
-            * (2 * sr**12 - sr**6)
-            / closest_r
-        )
-
-        coul_energy_debug = (
-            COULOMB_CONSTANT
-            * q1_debug
-            * q2_debug
-            * erfc_debug
-            / closest_r
+            12.0 * closest_C12 / closest_r**13
+            - 6.0 * closest_C6 / closest_r**7
         )
 
         lj_energy_debug = (
-            4 * LJ_EPSILON
-            * (sr**12 - sr**6)
-            - LJ_ENERGY_SHIFT
+            closest_C12 / closest_r**12
+            - closest_C6 / closest_r**6
+            - closest_shift
         )
 
         print(
             f"STEP {system.step} | "
             f"PAIR {closest_i}-{closest_j} | "
+            f"TYPES {system.ff_atom_types[closest_i]}-"
+            f"{system.ff_atom_types[closest_j]} | "
             f"r={closest_r:.6f} | "
-            f"FC={coul_force_debug:.3e} | "
+            f"C6={closest_C6:.6e} | "
+            f"C12={closest_C12:.6e} | "
+            f"SHIFT={closest_shift:.6e} | "
             f"FLJ={lj_force_debug:.3e} | "
-            f"C_E={coul_energy_debug:.3e} | "
             f"LJ_E={lj_energy_debug:.3e}"
         )
-
 
 
 
@@ -1142,6 +1188,10 @@ def non_bonded_forces(system):
 
     pair_i = pair_i[valid]
     pair_j = pair_j[valid]
+
+    pair_C6 = pair_C6[valid]
+    pair_C12 = pair_C12[valid]
+    pair_shift = pair_shift[valid]
 
     qi = qi[valid]
     qj = qj[valid]
@@ -1155,7 +1205,7 @@ def non_bonded_forces(system):
     r = r[valid]
 
     r_hat = r_vec / r[:, None]
-    
+
     lj_mask = r <= LJ_CUTOFF
 
     if cp.any(lj_mask):
@@ -1167,18 +1217,23 @@ def non_bonded_forces(system):
         lj_j = pair_j[lj_mask]
 
         lj_scale_local = lj_scale[lj_mask]
+        shift_local = pair_shift[lj_mask]
 
-        inv_r = LJ_SIGMA / lj_r
+        C6_local = pair_C6[lj_mask]
+        C12_local = pair_C12[lj_mask]
 
-        sr2 = inv_r * inv_r
-        sr6 = sr2 * sr2 * sr2
-        sr12 = sr6 * sr6
+        inv_r = 1.0 / lj_r
+
+        inv_r2 = inv_r * inv_r
+        inv_r6 = inv_r2 * inv_r2 * inv_r2
+        inv_r7 = inv_r6 * inv_r
+
+        inv_r12 = inv_r6 * inv_r6
+        inv_r13 = inv_r12 * inv_r
 
         force_mag = (
-            24.0
-            * LJ_EPSILON
-            * (2.0 * sr12 - sr6)
-            / lj_r
+            12.0 * C12_local * inv_r13
+            - 6.0 * C6_local * inv_r7
         )
 
         force_mag *= lj_scale_local
@@ -1189,10 +1244,9 @@ def non_bonded_forces(system):
         cp.add.at(system.forces, lj_j, -F_lj)
 
         U_lj = (
-            4.0
-            * LJ_EPSILON
-            * (sr12 - sr6)
-            - LJ_ENERGY_SHIFT
+            C12_local * inv_r12
+            - C6_local * inv_r6
+            - shift_local
         )
 
         system.potential_energy += cp.sum(
@@ -1233,6 +1287,27 @@ def non_bonded_forces(system):
                 / real_r
             )
         )
+
+        coulomb_strength = cp.abs(q1 * q2)
+
+        closest_coulomb = cp.argmin(
+            cp.where(coulomb_strength > 0, real_r, cp.inf)
+        )
+
+        ci = int(real_i[closest_coulomb])
+        cj = int(real_j[closest_coulomb])
+        cr = float(real_r[closest_coulomb])
+
+        print(
+            f"COUL CLOSEST | "
+            f"STEP {system.step} | "
+            f"PAIR {ci}-{cj} | "
+            f"TYPES {system.ff_atom_types[ci]}-{system.ff_atom_types[cj]} | "
+            f"r={cr:.9f} | "
+            f"q1={float(q1[closest_coulomb]):.6f} | "
+            f"q2={float(q2[closest_coulomb]):.6f}"
+        )
+
 
         force_mag *= scale
 
@@ -1303,10 +1378,14 @@ def calc_physics():
     potential = cp.fft.ifftn(Qk).real
     potential *= PME_GRID**3
 
+    forces_before = system.forces.copy()
     reciprocal_interpolation(system, potential)
+    reciprocal_forces = system.forces - forces_before
+
 
     # account for the self energy shift
-    system.potential_energy += PME_SELF_ENERGY
+    system.self_PE = PME_SELF_ENERGY
+    system.potential_energy += system.self_PE
 
     end_PME = time.perf_counter()
     global time_taken_PME
@@ -1318,9 +1397,27 @@ def calc_physics():
     end_all_foces = time.perf_counter()
     global time_taken_all_foces
     time_taken_all_foces += end_all_foces - start_all_foces
+                                
+    '''
+    print("\n========== PME RESULT ==========")
 
-    return system.potential_energy                                
+    print("Reciprocal energy:",
+        float(system.reciprocal_PE))
 
+    print("Self energy:",
+        float(system.self_PE))
+
+    print("Max force:",
+        float(cp.max(cp.linalg.norm(
+            reciprocal_forces, axis=1
+        ))))
+
+    print("Net force:",
+        cp.sum(reciprocal_forces, axis=0))
+
+    print("================================\n")
+    '''
+    return system.potential_energy
 
 # ---------------------------------------- SIMULATION LOOP ----------------------------------------
 
@@ -1452,7 +1549,7 @@ while True:
             plt.pause(0.001)
             system.average_total_energy = 0
 
-            print(f"KE: {system.kinetic_energy:.6f}  PE: {system.potential_energy:.6f}  Total: {system.total_energy:.6f}")
+            print(f"KE: {system.kinetic_energy:.12f}  PE: {system.potential_energy:.12f}  Total: {system.total_energy:.12f}")
         '''
         print()
         print(f"Step: {system.step}")
