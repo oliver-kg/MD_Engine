@@ -172,9 +172,9 @@ def insert_molecule(template):
 
     # Where this copy will go
     offset_position = vector(
-        uniform(0, PBC_BOX_LENGTH/3),
-        uniform(0, PBC_BOX_LENGTH/3),
-        uniform(0, PBC_BOX_LENGTH/3)
+        uniform(0, PBC_BOX_LENGTH),
+        uniform(0, PBC_BOX_LENGTH),
+        uniform(0, PBC_BOX_LENGTH)
     )
 
 # First new atom index
@@ -231,10 +231,32 @@ def insert_molecule(template):
     # Create bonds
     for a, b, r0, k in bond_data:
 
-        system.bond_a.append(a + atom_offset)
-        system.bond_b.append(b + atom_offset)
+        global_a = a + atom_offset
+        global_b = b + atom_offset
+
+        system.bond_a.append(global_a)
+        system.bond_b.append(global_b)
         system.bond_r0.append(r0)
         system.bond_k.append(k)
+
+        # Determine whether this bond should be constrained
+        atom_a_type = atom_type[a]
+        atom_b_type = atom_type[b]
+
+        is_h_bond = (
+            atom_a_type == "H" or
+            atom_b_type == "H"
+        )
+
+        system.bond_constrained.append(
+            CONSTRAIN_H_BONDS and is_h_bond
+        )
+
+        if CONSTRAIN_H_BONDS and is_h_bond:
+
+            system.constraint_a.append(global_a)
+            system.constraint_b.append(global_b)
+            system.constraint_r0.append(r0)
 
     # Create angles
     for i, j, k, theta0, k_theta in angle_data:
@@ -274,15 +296,11 @@ system.lj_c12_matrix = cp.asarray(
 )
 
 
-#create test molecules
+# Create test molecules
 water = load_molecule_template()
 
 for i in range(MOLECULE_NUMBERS):
     insert_molecule(water)
-
-
-
-
 
 
 # create Vectors
@@ -350,6 +368,11 @@ system.bond_b = cp.asarray(system.bond_b, dtype=cp.int32)
 system.bond_r0 = cp.asarray(system.bond_r0, dtype=cp.float64)
 system.bond_k = cp.asarray(system.bond_k, dtype=cp.float64)
 
+system.bond_constrained = cp.asarray(system.bond_constrained, dtype=cp.bool_)
+system.constraint_a = cp.asarray(system.constraint_a, dtype=cp.int32)
+system.constraint_b = cp.asarray(system.constraint_b, dtype=cp.int32)
+system.constraint_r0 = cp.asarray(system.constraint_r0, dtype=cp.float64)
+
 # Angles
 system.angle_i = cp.asarray(system.angle_i, dtype=cp.int32)
 system.angle_j = cp.asarray(system.angle_j, dtype=cp.int32)
@@ -372,7 +395,7 @@ system.n_torsions = len(system.torsion_i)
 
 
 
-# checks if a molecule has reached the box boundery and needs warping
+# Checks if a molecule has reached the box boundery and needs warping
 def wrap_molecules(system):
     half = PBC_BOX_LENGTH / 2
 
@@ -390,7 +413,7 @@ def wrap_molecules(system):
             for i in mol.atom_indices:
                 system.positions[i] += shift
 
-# simple camera movement via key press
+# Simple camera movement via key press
 def update_camera(dt):
     speed = 20 
 
@@ -417,11 +440,205 @@ def update_camera(dt):
         move = norm(move) * speed * dt
         scene.camera.pos += move
 
+# SHAKE-like constraints on H-X bonds to help increase dt
+def rattle_position_constraints(system, old_positions, free_half_velocities):
 
+    if system.constraint_a.size == 0:
+        return free_half_velocities
+
+    dt = TIME_STEP
+
+    # Start from the unconstrained Verlet trial position
+    trial_positions = old_positions + free_half_velocities * dt
+    system.positions[:] = trial_positions
+
+    # Bond vectors at q_n - these are the gradients used by the RATTLE position correction.
+    old_bond_vectors = []
+
+    for n in range(system.constraint_a.size):
+        a = int(system.constraint_a[n])
+        b = int(system.constraint_b[n])
+
+        r_vec = system.minimum_image(
+            old_positions[b] - old_positions[a]
+        )
+
+        old_bond_vectors.append(r_vec)
+
+    for _ in range(CONSTRAINT_MAX_ITERATIONS):
+
+        max_error = 0.0
+
+        for n in range(system.constraint_a.size):
+
+            a = int(system.constraint_a[n])
+            b = int(system.constraint_b[n])
+            r0 = system.constraint_r0[n]
+
+            r_old = old_bond_vectors[n]
+
+            # Current trial bond vector
+            r = system.minimum_image(
+                system.positions[b] - system.positions[a]
+            )
+
+            r2 = cp.dot(r, r)
+            target2 = r0 * r0
+
+            # Constraint:
+            # g(q) = 1/2 (r^2 - r0^2)
+            g = 0.5 * (r2 - target2)
+
+            error = abs(float(g))
+            max_error = max(max_error, error)
+
+            if error <= CONSTRAINT_TOLERANCE:
+                continue
+
+            ma = system.masses[a]
+            mb = system.masses[b]
+
+            inv_mass_sum = (
+                1.0 / ma +
+                1.0 / mb
+            )
+
+            # Derivative of constraint wrt lambda
+            denominator = (
+                dt * dt
+                * inv_mass_sum
+                * cp.dot(r, r_old)
+            )
+
+            if abs(float(denominator)) < 1e-20:
+                raise RuntimeError(
+                    f"RATTLE position solve became singular for "
+                    f"bond {a}-{b}."
+                )
+
+            # Newton correction to the constraint multiplier
+            delta_lambda = -g / denominator
+
+            # Position corrections
+            delta_a = (
+                -dt * dt
+                * delta_lambda
+                * r_old
+                / ma
+            )
+
+            delta_b = (
+                dt * dt
+                * delta_lambda
+                * r_old
+                / mb
+            )
+
+            system.positions[a] += delta_a
+            system.positions[b] += delta_b
+
+        if max_error <= CONSTRAINT_TOLERANCE:
+            break
+
+    else:
+        raise RuntimeError(
+            "RATTLE position constraints failed to converge. "
+            f"Maximum squared-distance constraint error = "
+            f"{max_error:.3e}"
+        )
+
+    constrained_half_velocities = (
+        system.positions - old_positions
+    ) / dt
+
+    return constrained_half_velocities
+
+def rattle_velocity_constraints(system):
+
+    if system.constraint_a.size == 0:
+        return
+
+    dt = TIME_STEP
+
+    for _ in range(CONSTRAINT_MAX_ITERATIONS):
+
+        max_error = 0.0
+
+        for n in range(system.constraint_a.size):
+
+            a = int(system.constraint_a[n])
+            b = int(system.constraint_b[n])
+
+            r_vec = system.minimum_image(
+                system.positions[b] - system.positions[a]
+            )
+
+            r2 = cp.dot(r_vec, r_vec)
+
+            if float(r2) < 1e-20:
+                raise RuntimeError(
+                    f"RATTLE velocity bond {a}-{b} has zero length."
+                )
+
+            v_rel = (
+                system.velocities[b]
+                - system.velocities[a]
+            )
+
+            # Velocity constraint:
+            # r · v_rel = 0
+            constraint = cp.dot(r_vec, v_rel)
+
+            error = abs(float(constraint))
+            max_error = max(max_error, error)
+
+            if error <= CONSTRAINT_VELOCITY_TOLERANCE:
+                continue
+
+            ma = system.masses[a]
+            mb = system.masses[b]
+
+            inv_mass_sum = (
+                1.0 / ma +
+                1.0 / mb
+            )
+
+            lambda_value = (
+                -constraint
+                / (dt * inv_mass_sum * r2)
+            )
+
+            delta_va = (
+                -dt
+                * lambda_value
+                * r_vec
+                / ma
+            )
+
+            delta_vb = (
+                dt
+                * lambda_value
+                * r_vec
+                / mb
+            )
+
+            system.velocities[a] += delta_va
+            system.velocities[b] += delta_vb
+
+        if max_error <= CONSTRAINT_VELOCITY_TOLERANCE:
+            break
+
+    else:
+        raise RuntimeError(
+            "RATTLE velocity constraints failed to converge. "
+            f"Maximum r·v constraint error = "
+            f"{max_error:.3e}"
+        )
+    
 # ---------------------------------------- NEIGHBOURS ----------------------------------------
 
 
-# builds the neibour list structure
+# Builds the neibour list structure
 def build_neighbours():
     bond_a_cpu = cp.asnumpy(system.bond_a)
     bond_b_cpu = cp.asnumpy(system.bond_b)
@@ -436,7 +653,7 @@ def build_neighbours():
 
     return neighbours
 
-# filters out all the bonds into 1-2, 1-3 or 1-4 bonds
+# Filters out all the bonds into 1-2, 1-3 or 1-4 bonds
 def build_exclusion_sets():
     exclusions_start = time.perf_counter()
 
@@ -493,6 +710,15 @@ def build_neighbour_lists(system, neighbour_cutoff):
 
     cells = build_cell_list(system, positions_cpu)
 
+    old_pairs = set(
+        zip(
+            cp.asnumpy(system.pair_i).tolist(),
+            cp.asnumpy(system.pair_j).tolist()
+        )
+    )
+
+
+
     for i in range(system.n_atoms):  
         my_cell = find_cell_of_atom(positions_cpu[i])
 
@@ -531,6 +757,50 @@ def build_neighbour_lists(system, neighbour_cutoff):
 
     system.pair_lj_scale = cp.asarray(pair_lj_scale, dtype=np.float64)
     system.pair_coulomb_scale = cp.asarray(pair_coulomb_scale, dtype=np.float64)
+
+
+    new_pairs = set(
+        zip(
+            cp.asnumpy(pair_i).tolist(),
+            cp.asnumpy(pair_j).tolist()
+        )
+    )
+
+    added_pairs = sorted(new_pairs - old_pairs)
+    removed_pairs = sorted(old_pairs - new_pairs)
+
+    with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+
+        f.write("\n")
+        f.write(f"NEIGHBOUR LIST REBUILD AT STEP {system.step}\n")
+        f.write(f"OLD PAIRS: {len(old_pairs)}\n")
+        f.write(f"NEW PAIRS: {len(new_pairs)}\n")
+        f.write(f"ADDED: {len(added_pairs)}\n")
+        f.write(f"REMOVED: {len(removed_pairs)}\n")
+
+        for i, j in added_pairs:
+
+            rij = system.minimum_image(
+                system.positions[j] - system.positions[i]
+            )
+
+            r = float(cp.linalg.norm(rij).get())
+
+            f.write(
+                f"  ADDED {i}-{j} r={r:.9f} nm\n"
+            )
+
+        for i, j in removed_pairs:
+
+            rij = system.minimum_image(
+                system.positions[j] - system.positions[i]
+            )
+
+            r = float(cp.linalg.norm(rij).get())
+
+            f.write(
+                f"  REMOVED {i}-{j} r={r:.9f} nm\n"
+            )
 
 def find_cell_of_atom(atom_pos):
 
@@ -584,7 +854,7 @@ def neighbouring_cells(cell):
 def calc_LJ_force(dist, direction):
     return  -((24*LJ_EPSILON*((2*((LJ_SIGMA/dist)**12)) - ((LJ_SIGMA/dist)**6)))*(1/dist))*direction
 
-# calc Kintetic energy of particles
+# Calc Kintetic energy of particles
 def calc_KE_old(system):
     system.kinetic_energy = 0
     for i in range(system.n_atoms): 
@@ -600,7 +870,7 @@ def calc_KE(system):
 
     return system.kinetic_energy 
 
-# calc Coulombs
+# Calc Coulombs
 def calc_coulombs(q1, q2, r, direction, k):
 
     if r == 0:
@@ -996,12 +1266,19 @@ def bond_forces(system):
 
     start_bonds = time.perf_counter()
 
-    a = system.bond_a
-    b = system.bond_b
-    r0 = system.bond_r0
-    k = system.bond_k
+    # Only flexible bonds receive harmonic forces
+    flexible = ~system.bond_constrained
 
-    # compute the bond vector and bond lengths
+    if not cp.any(flexible):
+        return
+
+    a = system.bond_a[flexible]
+    b = system.bond_b[flexible]
+    r0 = system.bond_r0[flexible]
+    k = system.bond_k[flexible]
+
+
+    # Compute the bond vector and bond lengths
     r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
     r = cp.linalg.norm(r_vec, axis=1)
 
@@ -1114,6 +1391,19 @@ def torsion_forces(system):
 
 def non_bonded_forces(system):
 
+    closest_r = float("inf")
+
+    system.debug_max_lj_force = 0.0
+    system.debug_max_lj_pair = None
+    system.debug_max_lj_r = 0.0
+
+    system.debug_max_coul_force = 0.0
+    system.debug_max_coul_pair = None
+    system.debug_max_coul_r = 0.0
+
+
+    lj_PE = 0.0
+
     pair_i = system.pair_i
     pair_j = system.pair_j
 
@@ -1182,8 +1472,6 @@ def non_bonded_forces(system):
             f"LJ_E={lj_energy_debug:.3e}"
         )
 
-
-
     valid = r > 1e-12
 
     pair_i = pair_i[valid]
@@ -1200,7 +1488,6 @@ def non_bonded_forces(system):
     coulomb_scale = coulomb_scale[valid]
 
     # LJ Force
-
     r_vec = r_vec[valid]
     r = r[valid]
 
@@ -1240,6 +1527,24 @@ def non_bonded_forces(system):
 
         F_lj = -force_mag[:, None] * lj_hat
 
+        # ---------------------------------------------------------
+        # DEBUG: largest LJ pair force
+        # ---------------------------------------------------------
+        lj_force_abs = cp.abs(force_mag)
+
+        if cp.any(lj_force_abs > 0):
+            idx = int(cp.argmax(lj_force_abs))
+
+            max_lj_force = float(lj_force_abs[idx].get())
+
+            if max_lj_force > system.debug_max_lj_force:
+                system.debug_max_lj_force = max_lj_force
+                system.debug_max_lj_pair = (
+                    int(lj_i[idx]),
+                    int(lj_j[idx])
+                )
+                system.debug_max_lj_r = float(lj_r[idx].get())
+
         cp.add.at(system.forces, lj_i,  F_lj)
         cp.add.at(system.forces, lj_j, -F_lj)
 
@@ -1249,9 +1554,12 @@ def non_bonded_forces(system):
             - shift_local
         )
 
-        system.potential_energy += cp.sum(
+        current_lj_PE = cp.sum(
             lj_scale_local * U_lj
         )
+
+        system.potential_energy += current_lj_PE
+        lj_PE += float(current_lj_PE.get())
     
     # Coulomb Force
     
@@ -1294,24 +1602,27 @@ def non_bonded_forces(system):
             cp.where(coulomb_strength > 0, real_r, cp.inf)
         )
 
-        ci = int(real_i[closest_coulomb])
-        cj = int(real_j[closest_coulomb])
-        cr = float(real_r[closest_coulomb])
-
-        print(
-            f"COUL CLOSEST | "
-            f"STEP {system.step} | "
-            f"PAIR {ci}-{cj} | "
-            f"TYPES {system.ff_atom_types[ci]}-{system.ff_atom_types[cj]} | "
-            f"r={cr:.9f} | "
-            f"q1={float(q1[closest_coulomb]):.6f} | "
-            f"q2={float(q2[closest_coulomb]):.6f}"
-        )
-
-
         force_mag *= scale
 
         F_coul = -force_mag[:, None] * real_hat
+
+        # ---------------------------------------------------------
+        # DEBUG: largest real-space Coulomb pair force
+        # ---------------------------------------------------------
+        coul_force_abs = cp.abs(force_mag)
+
+        if cp.any(coul_force_abs > 0):
+            idx = int(cp.argmax(coul_force_abs))
+
+            max_coul_force = float(coul_force_abs[idx].get())
+
+            if max_coul_force > system.debug_max_coul_force:
+                system.debug_max_coul_force = max_coul_force
+                system.debug_max_coul_pair = (
+                    int(real_i[idx]),
+                    int(real_j[idx])
+                )
+                system.debug_max_coul_r = float(real_r[idx].get())
 
         cp.add.at(system.forces, real_i, F_coul)
         cp.add.at(system.forces, real_j, -F_coul)
@@ -1327,9 +1638,349 @@ def non_bonded_forces(system):
 
         energy = cp.sum(U_coul)
 
+        system.lj_PE = lj_PE
         system.real_space_PE += energy
         system.potential_energy += energy
     
+
+
+# -------------------------------------
+# ENERGY / COLLISION DEBUG LOGGER
+# -------------------------------------
+
+
+DEBUG_LOG_FILE = "MD_debug_log.txt"
+
+def initialise_debug_log():
+
+    with open(DEBUG_LOG_FILE, "w", encoding="utf-8") as f:
+
+        f.write("=" * 120 + "\n")
+        f.write("MD ENGINE DEBUG LOG\n")
+        f.write("=" * 120 + "\n")
+
+        f.write(f"TIMESTEP (ps): {TIME_STEP}\n")
+        f.write(f"LJ CUTOFF (nm): {LJ_CUTOFF}\n")
+        f.write(f"REAL CUTOFF (nm): {REAL_CUTOFF}\n")
+        f.write(f"PME ALPHA: {PME_ALPHA}\n")
+        f.write(f"PBC BOX LENGTH (nm): {PBC_BOX_LENGTH}\n")
+
+        f.write("\n")
+        f.write("=" * 120 + "\n")
+        f.write("STEP-BY-STEP DATA\n")
+        f.write("=" * 120 + "\n\n")
+
+        f.write(
+            "STEP\t"
+            "TIME_PS\t"
+            "KE\t"
+            "LJ_PE\t"
+            "REAL_PE\t"
+            "RECIP_PE\t"
+            "SELF_PE\t"
+            "EXCL_PE\t"
+            "TOTAL_PE\t"
+            "TOTAL_E\t"
+            "MIN_H_OW\t"
+            "MIN_O_O\t"
+            "MAX_FORCE\t"
+            "MAX_FORCE_ATOM\t"
+            "MAX_VELOCITY\t"
+            "MAX_LJ_FORCE\t"
+            "LJ_PAIR\t"
+            "LJ_R\t"
+            "MAX_COUL_FORCE\t"
+            "COUL_PAIR\t"
+            "COUL_R\t"
+            "MAX_PME_FORCE\t"
+            "PME_ATOM\t"
+            "NEIGHBOUR_PAIRS\n"
+        )
+
+def debug_log_step(system):
+
+    # ---------------------------------
+    # Basic energy values
+    # ---------------------------------
+
+    step = int(system.step)
+    time_ps = step * TIME_STEP
+
+    KE = float(system.kinetic_energy)
+
+    LJ = float(getattr(system, "lj_PE", 0.0))
+    REAL = float(getattr(system, "real_space_PE", 0.0))
+    RECIP = float(getattr(system, "reciprocal_PE", 0.0))
+    SELF = float(getattr(system, "self_PE", 0.0))
+    EXCL = float(getattr(system, "exclusion_PE", 0.0))
+
+    TOTAL_PE = float(system.potential_energy)
+    TOTAL_E = KE + TOTAL_PE
+
+    # ---------------------------------
+    # Atom information
+    # ---------------------------------
+
+    positions = cp.asarray(system.positions)
+    velocities = cp.asarray(system.velocities)
+    forces = cp.asarray(system.forces)
+
+    # maximum force
+    force_magnitudes = cp.linalg.norm(forces, axis=1)
+    max_force = float(cp.max(force_magnitudes).get())
+    max_force_atom = int(cp.argmax(force_magnitudes))
+
+    # maximum velocity
+    velocity_magnitudes = cp.linalg.norm(velocities, axis=1)
+    max_velocity = float(cp.max(velocity_magnitudes).get())
+
+    # ---------------------------------
+    # Force-source diagnostics
+    # ---------------------------------
+
+    lj_pair = getattr(system, "debug_max_lj_pair", None)
+    coul_pair = getattr(system, "debug_max_coul_pair", None)
+
+    if lj_pair is not None:
+        lj_i, lj_j = lj_pair
+        lj_i_type = system.ff_atom_types[lj_i]
+        lj_j_type = system.ff_atom_types[lj_j]
+    else:
+        lj_i = lj_j = -1
+        lj_i_type = lj_j_type = "NONE"
+
+    if coul_pair is not None:
+        coul_i, coul_j = coul_pair
+        coul_i_type = system.ff_atom_types[coul_i]
+        coul_j_type = system.ff_atom_types[coul_j]
+    else:
+        coul_i = coul_j = -1
+        coul_i_type = coul_j_type = "NONE"
+
+    reciprocal_force = getattr(
+        system,
+        "debug_max_reciprocal_force",
+        0.0
+    )
+
+    reciprocal_atom = getattr(
+        system,
+        "debug_max_reciprocal_atom",
+        -1
+    )
+
+
+    # ---------------------------------
+    # Minimum H-OW and O-O distances
+    #
+    # This uses atom types from system.atom_types
+    # ---------------------------------
+
+    min_h_ow = float("inf")
+    min_o_o = float("inf")
+
+    h_indices = []
+    ow_indices = []
+    o_indices = []
+
+    for idx, atom_type in enumerate(system.ff_atom_types):
+
+        if atom_type == "H":
+            h_indices.append(idx)
+
+        if atom_type == "OW":
+            ow_indices.append(idx)
+
+        if atom_type == "O":
+            o_indices.append(idx)
+
+    # H-OW
+    for h in h_indices:
+
+        for ow in ow_indices:
+
+            if h == ow:
+                continue
+
+            r_vec = system.minimum_image(
+                positions[ow] - positions[h]
+            )
+
+            r = float(cp.linalg.norm(r_vec).get())
+
+            if r < min_h_ow:
+                min_h_ow = r
+
+    # O-O
+    oxygen_indices = ow_indices + o_indices
+
+    for a in range(len(oxygen_indices)):
+
+        for b in range(a + 1, len(oxygen_indices)):
+
+            i = oxygen_indices[a]
+            j = oxygen_indices[b]
+
+            r_vec = system.minimum_image(
+                positions[j] - positions[i]
+            )
+
+            r = float(cp.linalg.norm(r_vec).get())
+
+            if r < min_o_o:
+                min_o_o = r
+
+    # -------------------------------------------------------------------------
+    # Neighbour list size
+    # -------------------------------------------------------------------------
+
+    try:
+        neighbour_pairs = len(system.pair_i)
+    except Exception:
+        neighbour_pairs = -1
+
+    # -------------------------------------------------------------------------
+    # Write to log
+    # -------------------------------------------------------------------------
+
+    with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+
+        f.write(
+            f"{step}\t"
+            f"{time_ps:.8f}\t"
+            f"{KE:.9f}\t"
+            f"{LJ:.9f}\t"
+            f"{REAL:.9f}\t"
+            f"{RECIP:.9f}\t"
+            f"{SELF:.9f}\t"
+            f"{EXCL:.9f}\t"
+            f"{TOTAL_PE:.9f}\t"
+            f"{TOTAL_E:.9f}\t"
+            f"{min_h_ow:.9f}\t"
+            f"{min_o_o:.9f}\t"
+            f"{max_force:.9f}\t"
+            f"{max_force_atom}\t"
+            f"{max_velocity:.9f}\t"
+            f"{system.debug_max_lj_force:.9f}\t"
+            f"{lj_i}-{lj_j} ({lj_i_type}-{lj_j_type})\t"
+            f"{system.debug_max_lj_r:.9f}\t"
+            f"{system.debug_max_coul_force:.9f}\t"
+            f"{coul_i}-{coul_j} ({coul_i_type}-{coul_j_type})\t"
+            f"{system.debug_max_coul_r:.9f}\t"
+            f"{reciprocal_force:.9f}\t"
+            f"{reciprocal_atom}\t"
+            f"{neighbour_pairs}\n"
+        )
+
+def debug_log_closest_pairs(system):
+
+    positions = cp.asarray(system.positions)
+    charges = cp.asarray(system.charges)
+
+    h_indices = []
+    ow_indices = []
+
+    for idx, atom_type in enumerate(system.ff_atom_types):
+
+        if atom_type == "H":
+            h_indices.append(idx)
+
+        elif atom_type == "OW":
+            ow_indices.append(idx)
+
+    closest_h_ow = None
+
+    # ---------------------------------
+    # Closest H-OW
+    # ---------------------------------
+
+    for h in h_indices:
+
+        for ow in ow_indices:
+
+            r_vec = system.minimum_image(
+                positions[ow] - positions[h]
+            )
+
+            r = float(cp.linalg.norm(r_vec).get())
+
+            if closest_h_ow is None or r < closest_h_ow["r"]:
+
+                closest_h_ow = {
+                    "i": h,
+                    "j": ow,
+                    "r": r
+                }
+
+    # ---------------------------------
+    # Closest O-O
+    # ---------------------------------
+
+    oxygen_indices = ow_indices
+
+    closest_o_o = None
+
+    for a in range(len(oxygen_indices)):
+
+        for b in range(a + 1, len(oxygen_indices)):
+
+            i = oxygen_indices[a]
+            j = oxygen_indices[b]
+
+            r_vec = system.minimum_image(
+                positions[j] - positions[i]
+            )
+
+            r = float(cp.linalg.norm(r_vec).get())
+
+            if closest_o_o is None or r < closest_o_o["r"]:
+
+                closest_o_o = {
+                    "i": i,
+                    "j": j,
+                    "r": r
+                }
+
+    with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+
+        f.write("\n")
+        f.write(f"STEP {system.step} PAIR DETAILS\n")
+
+        # H-OW
+        if closest_h_ow is not None:
+
+            i = closest_h_ow["i"]
+            j = closest_h_ow["j"]
+            r = closest_h_ow["r"]
+
+            qi = float(charges[i].get())
+            qj = float(charges[j].get())
+
+            f.write(
+                f"  H-OW CLOSEST: "
+                f"{i}-{j} "
+                f"r={r:.9f} nm "
+                f"qH={qi:.6f} "
+                f"qOW={qj:.6f}\n"
+            )
+
+        # O-O
+        if closest_o_o is not None:
+
+            i = closest_o_o["i"]
+            j = closest_o_o["j"]
+            r = closest_o_o["r"]
+
+            f.write(
+                f"  O-O CLOSEST: "
+                f"{i}-{j} "
+                f"r={r:.9f} nm\n"
+            )
+
+        f.write("\n")
+
+
+initialise_debug_log()
 
 
 # ---------------------------------------- PHYSICS LOOP ----------------------------------------
@@ -1382,6 +2033,22 @@ def calc_physics():
     reciprocal_interpolation(system, potential)
     reciprocal_forces = system.forces - forces_before
 
+    # ---------------------------------------------------------
+    # DEBUG: largest reciprocal PME force
+    # ---------------------------------------------------------
+    reciprocal_force_mag = cp.linalg.norm(
+        reciprocal_forces,
+        axis=1
+    )
+
+    max_recip_idx = int(cp.argmax(reciprocal_force_mag))
+
+    system.debug_max_reciprocal_force = float(
+        reciprocal_force_mag[max_recip_idx].get()
+    )
+
+    system.debug_max_reciprocal_atom = max_recip_idx
+
 
     # account for the self energy shift
     system.self_PE = PME_SELF_ENERGY
@@ -1398,26 +2065,95 @@ def calc_physics():
     global time_taken_all_foces
     time_taken_all_foces += end_all_foces - start_all_foces
                                 
-    '''
-    print("\n========== PME RESULT ==========")
-
-    print("Reciprocal energy:",
-        float(system.reciprocal_PE))
-
-    print("Self energy:",
-        float(system.self_PE))
-
-    print("Max force:",
-        float(cp.max(cp.linalg.norm(
-            reciprocal_forces, axis=1
-        ))))
-
-    print("Net force:",
-        cp.sum(reciprocal_forces, axis=0))
-
-    print("================================\n")
-    '''
     return system.potential_energy
+
+
+TRAJECTORY_FILE = "MD_trajectory.xyz"
+
+# Save one frame every N MD steps
+TRAJECTORY_INTERVAL = 100
+
+
+def initialise_trajectory():
+    """
+    Create an empty multi-frame XYZ trajectory file.
+
+    XYZ format per frame:
+
+        N
+        comment
+        Element x y z
+        Element x y z
+        ...
+
+    Coordinates are in nm, as used internally by the engine.
+    """
+
+    with open(TRAJECTORY_FILE, "w", encoding="utf-8"):
+        pass
+
+def write_trajectory_frame(system):
+    """
+    Append one complete multi-frame XYZ frame.
+
+    The complete frame is assembled in memory first so that the
+    trajectory file is never intentionally left halfway through
+    a frame by this function.
+    """
+
+    element_map = {
+        "H": "H",
+        "OW": "O",
+        "O": "O",
+        "HW": "H",
+        "C": "C",
+        "N": "N",
+        "S": "S",
+    }
+
+    positions_cpu = cp.asnumpy(system.positions)
+    n_atoms = system.n_atoms
+    time_ps = system.step * TIME_STEP
+
+    lines = [
+        f"{n_atoms}\n",
+        f"Step {system.step} Time {time_ps:.8f} ps "
+        f"L={PBC_BOX_LENGTH:.8f} nm\n"
+    ]
+
+    for i in range(n_atoms):
+        ff_type = system.ff_atom_types[i]
+
+        if ff_type not in element_map:
+            raise ValueError(
+                f"No XYZ element mapping for atom type "
+                f"'{ff_type}' at atom {i}"
+            )
+
+        element = element_map[ff_type]
+        x, y, z = positions_cpu[i]
+
+        lines.append(
+            f"{element} "
+            f"{x:.8f} "
+            f"{y:.8f} "
+            f"{z:.8f}\n"
+        )
+
+    # Sanity check before touching the file
+    if len(lines) != n_atoms + 2:
+        raise RuntimeError(
+            "XYZ frame construction failed: wrong atom count."
+        )
+
+    frame = "".join(lines)
+
+    with open(TRAJECTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(frame)
+        f.flush()
+
+
+initialise_trajectory()
 
 # ---------------------------------------- SIMULATION LOOP ----------------------------------------
 
@@ -1430,7 +2166,7 @@ render_initial_model()
 
 
 last_neighbour_build_step = 0
-relax_steps = 250
+relax_steps = 0
 timestep_x = 1
 max_displacement2 = 0
 
@@ -1438,45 +2174,55 @@ max_displacement2 = 0
 while True:
     start_total_time = time.perf_counter()
     update_camera(TIME_STEP)
-    
+    old_positions = system.positions.copy()
     # lighting position for camera
     cam_light.pos = scene.camera.pos - scene.camera.axis.norm()*3
     
     # Verlet integration method:
-    # 1. half-step velocity update
-    system.velocities += (0.5 * (system.forces /system.masses[:, None]) * TIME_STEP)     # first half-step velocity update - uses current force to push velocity halfway forward
 
-    # 2. position update
-    system.positions += (system.velocities * TIME_STEP)                      # update pos
+    # 1. First physical half-step
+    free_half_velocities = (system.velocities + 0.5 * (system.forces / system.masses[:, None]) * TIME_STEP)
 
-    # 3. wrap positions back into box
+    # 2. Position RATTLE
+    constrained_half_velocities = rattle_position_constraints(system, old_positions, free_half_velocities)
+
+    # Replace velocity with the constrained half-step velocity
+    system.velocities[:] = constrained_half_velocities
+
+    # 3. Now wrap molecules
     wrap_molecules(system)
 
-    # 4. reset forces
-    system.forces.fill(0.0)                             # clear old forces before computing new ones
+    # 4. Forces at q_(n+1)
+    system.forces.fill(0.0)
 
-    # 5. compute new forces
-    system.potential_energy = calc_physics()                                           # now get new forces at the new positions
+    system.potential_energy = calc_physics()
 
-    # 6. second half-step velocity update
-    system.velocities += (0.5 * (system.forces / system.masses[:, None]) * TIME_STEP)   # compleate  the full velocity update using the new forces
+    # 5. Second physical half-step
+    system.velocities += (0.5 * (system.forces / system.masses[:, None]) * TIME_STEP)
 
-    # 7. dampen starting strains - ensures the system is calm so it doesent blow up to begin with
-
-    if system.step < relax_steps/5:
+    # 6. Relaxation damping
+    if system.step < relax_steps / 5:
         damping = 0.99
-    elif system.step < relax_steps/2:
+    elif system.step < relax_steps / 2:
         damping = 0.995
     elif system.step < relax_steps:
         damping = 0.999
     else:
-        damping = 1                                             # no more dampening
-        
-    system.velocities *= damping                                 # dampens some of the velocity at each step when begining
+        damping = 1.0
+
+    system.velocities *= damping
+
+    # 7. Final RATTLE velocity constraint
+    rattle_velocity_constraints(system)
 
     system.kinetic_energy = calc_KE(system)                                             # energy tracking
     system.total_energy = system.kinetic_energy + system.potential_energy
     system.average_total_energy += system.total_energy
+
+    debug_log_step(system)
+    debug_log_closest_pairs(system)
+
+
     system.step += 1
 
     if system.step == relax_steps:
@@ -1530,6 +2276,11 @@ while True:
 
     time_other = time_taken_total - (time_taken_graphics + time_taken_all_foces)
 
+
+    if system.step % TRAJECTORY_INTERVAL == 0:
+        write_trajectory_frame(system)
+
+
     # printing and debuging stuff that prints every x timesteps
     if system.step % timestep_x == 0:
 
@@ -1549,7 +2300,7 @@ while True:
             plt.pause(0.001)
             system.average_total_energy = 0
 
-            print(f"KE: {system.kinetic_energy:.12f}  PE: {system.potential_energy:.12f}  Total: {system.total_energy:.12f}")
+            #print(f"KE: {system.kinetic_energy:.12f}  PE: {system.potential_energy:.12f}  Total: {system.total_energy:.12f}")
         '''
         print()
         print(f"Step: {system.step}")

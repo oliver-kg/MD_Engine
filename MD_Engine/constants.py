@@ -21,9 +21,19 @@ REAL_CUTOFF = 1.2
 # SIMULATION PARAMETERS
 # ------------------------
 
-TIME_STEP = 0.00005
-PBC_BOX_LENGTH = 4
-MOLECULE_NUMBERS = 3
+TIME_STEP = 0.0002
+PBC_BOX_LENGTH = 7
+MOLECULE_NUMBERS = 25
+
+# ------------------------
+# CONSTRAINT SETTINGS
+# ------------------------
+
+CONSTRAIN_H_BONDS = True
+
+CONSTRAINT_TOLERANCE = 1e-8       # nm
+CONSTRAINT_VELOCITY_TOLERANCE = 1e-10     # nm/ps
+CONSTRAINT_MAX_ITERATIONS = 10
 
 # ------------------------
 # NEIGHBOURS

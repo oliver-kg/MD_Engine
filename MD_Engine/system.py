@@ -51,6 +51,11 @@ class System:
         self.bond_k = []
         self.step = 0
 
+        self.bond_constrained = []
+        self.constraint_a = []
+        self.constraint_b = []
+        self.constraint_r0 = []
+
         # Angles
 
         self.angle_i = []
@@ -85,6 +90,7 @@ class System:
 
         self.BC = None
 
+
         # Energies
         self.potential_energy = cp.array([0.0], dtype=cp.float64)
         self.potential_energy_gpu = cp.array([0.0], dtype=cp.float64)
@@ -103,6 +109,7 @@ class System:
         self.force_real_coulomb = None
         self.force_exclusion = None
         self.force_reciprocal = None
+        self.lj_PE = 0.0
 
 
 
