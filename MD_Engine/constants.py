@@ -22,8 +22,8 @@ REAL_CUTOFF = 1.2
 # ------------------------
 
 TIME_STEP = 0.0002
-PBC_BOX_LENGTH = 7
-MOLECULE_NUMBERS = 25
+PBC_BOX_LENGTH = 4
+MOLECULE_NUMBERS = 10
 
 # ------------------------
 # CONSTRAINT SETTINGS

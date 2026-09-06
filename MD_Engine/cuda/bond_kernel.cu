@@ -8,6 +8,7 @@ void bond_kernel(
     const double *bond_r0,
     const double *bond_k,
     double box_length,
+    const unsigned char *bond_constrained,
     double *potential_energy,
     int n_bonds
 )
@@ -22,6 +23,11 @@ void bond_kernel(
     if (bond >= n_bonds)
         return;
 
+
+    // Constrained bonds are handled by the constraint solver, not the harmonic bond potential.
+    if (bond_constrained[bond])
+        return;
+    
     // -------------------------------------------------
     // 2. Read bond information
     // -------------------------------------------------

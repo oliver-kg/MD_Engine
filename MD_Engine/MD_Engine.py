@@ -338,15 +338,33 @@ lj_shift_matrix = np.zeros(
     dtype=np.float64
 )
 
+lj_force_shift_matrix = np.zeros(
+    (read_molecules.num_ff_types, read_molecules.num_ff_types),
+    dtype=np.float64
+)
+
 for i in range(system.num_ff_types):
     for j in range(system.num_ff_types):
 
         C6 = lj_c6_cpu[i, j]
         C12 = lj_c12_cpu[i, j]
 
+        rc = LJ_CUTOFF
+
+        # LJ potential at cutoff
         lj_shift_matrix[i, j] = (
-            C12 / LJ_CUTOFF**12
-            - C6 / LJ_CUTOFF**6
+            C12 / rc**12
+            - C6 / rc**6
+        )
+
+        # "force magnitude" used by your current implementation:
+        #
+        # F_vector = -force_mag * r_hat
+        #
+        # Evaluate it at the cutoff
+        lj_force_shift_matrix[i, j] = (
+            12.0 * C12 / rc**13
+            - 6.0 * C6 / rc**7
         )
 
 system.lj_shift_matrix = cp.asarray(
@@ -354,10 +372,16 @@ system.lj_shift_matrix = cp.asarray(
     dtype=cp.float64
 )
 
+system.lj_force_shift_matrix = cp.asarray(
+    lj_force_shift_matrix,
+    dtype=cp.float64
+)
+
 system.ff_type_ids = cp.asarray(
     system.ff_type_ids,
     dtype=cp.int32
 )
+
 # Topology
 system.n_atoms = len(system.positions)
 
@@ -367,6 +391,8 @@ system.bond_b = cp.asarray(system.bond_b, dtype=cp.int32)
 
 system.bond_r0 = cp.asarray(system.bond_r0, dtype=cp.float64)
 system.bond_k = cp.asarray(system.bond_k, dtype=cp.float64)
+
+system.bond_constrained = cp.asarray(system.bond_constrained, dtype=cp.uint8)
 
 system.bond_constrained = cp.asarray(system.bond_constrained, dtype=cp.bool_)
 system.constraint_a = cp.asarray(system.constraint_a, dtype=cp.int32)
@@ -547,9 +573,9 @@ def rattle_position_constraints(system, old_positions, free_half_velocities):
             f"{max_error:.3e}"
         )
 
-    constrained_half_velocities = (
-        system.positions - old_positions
-    ) / dt
+    delta = system.minimum_image(system.positions - old_positions)
+
+    constrained_half_velocities = delta / dt
 
     return constrained_half_velocities
 
@@ -1266,41 +1292,38 @@ def bond_forces(system):
 
     start_bonds = time.perf_counter()
 
-    # Only flexible bonds receive harmonic forces
-    flexible = ~system.bond_constrained
+    with open("cuda/bond_kernel.cu") as f:
+        code = f.read()
 
-    if not cp.any(flexible):
-        return
+    bond_kernel = cp.RawKernel(
+        code,
+        "bond_kernel"
+    )
 
-    a = system.bond_a[flexible]
-    b = system.bond_b[flexible]
-    r0 = system.bond_r0[flexible]
-    k = system.bond_k[flexible]
+    threads = 256
+    blocks = (system.n_bonds + threads - 1) // threads
 
+    system.potential_energy_gpu.fill(0)
 
-    # Compute the bond vector and bond lengths
-    r_vec = system.minimum_image((system.positions[b] - system.positions[a]))
-    r = cp.linalg.norm(r_vec, axis=1)
+    bond_kernel(
+    (blocks,),
+    (threads,),
+    (
+        system.positions,
+        system.forces,
+        system.bond_a,
+        system.bond_b,
+        system.bond_r0,
+        system.bond_k,
+        cp.float64(PBC_BOX_LENGTH),
+        system.bond_constrained,
+        system.potential_energy_gpu,
+        system.n_bonds
+    )
+)
+    cp.cuda.runtime.deviceSynchronize()
 
-    valid = r > 1e-12                              # avoid devide by zero just in case
-
-    a = a[valid]
-    b = b[valid]
-
-    r = r[valid]
-    r0 = r0[valid]
-    k = k[valid]
-
-    r_vec = r_vec[valid]
-
-    r_hat = r_vec / r[:, None]                           # bond direction
-
-    F = 2 * k[:, None] * (r - r0)[:, None] * r_hat                # harmonic restoring force (bonds) - direction is used to turn scalar into vector. Switched to function 2 type bonds
-
-    cp.add.at(system.forces, a,  F)                          # apply Newtons third law - equal and opposite forces
-    cp.add.at(system.forces, b, -F)
-    system.potential_energy += cp.sum(k * (r - r0)**2)                # calc the harmonic bond potential in function 2 type bond
-
+    system.potential_energy += float(system.potential_energy_gpu[0])
 
 
     end_bonds = time.perf_counter()
@@ -1391,8 +1414,6 @@ def torsion_forces(system):
 
 def non_bonded_forces(system):
 
-    closest_r = float("inf")
-
     system.debug_max_lj_force = 0.0
     system.debug_max_lj_pair = None
     system.debug_max_lj_r = 0.0
@@ -1415,7 +1436,8 @@ def non_bonded_forces(system):
     pair_C6 = system.lj_c6_matrix[type_i, type_j]
     pair_C12 = system.lj_c12_matrix[type_i, type_j]
     pair_shift = system.lj_shift_matrix[type_i, type_j]
-
+    pair_force_shift = (system.lj_force_shift_matrix[type_i, type_j])
+    
     ri = system.positions[pair_i]
     rj = system.positions[pair_j]
 
@@ -1438,40 +1460,6 @@ def non_bonded_forces(system):
         closest_lj_local = cp.argmin(r[lj_candidate])
         closest = lj_indices[closest_lj_local]
 
-        closest_i = int(pair_i[closest])
-        closest_j = int(pair_j[closest])
-        closest_r = float(r[closest])
-
-        closest_C6 = float(pair_C6[closest])
-        closest_C12 = float(pair_C12[closest])
-        closest_shift = float(pair_shift[closest])
-
-    if system.step % 10 == 0 and closest_r < LJ_CUTOFF:
-
-        lj_force_debug = (
-            12.0 * closest_C12 / closest_r**13
-            - 6.0 * closest_C6 / closest_r**7
-        )
-
-        lj_energy_debug = (
-            closest_C12 / closest_r**12
-            - closest_C6 / closest_r**6
-            - closest_shift
-        )
-
-        print(
-            f"STEP {system.step} | "
-            f"PAIR {closest_i}-{closest_j} | "
-            f"TYPES {system.ff_atom_types[closest_i]}-"
-            f"{system.ff_atom_types[closest_j]} | "
-            f"r={closest_r:.6f} | "
-            f"C6={closest_C6:.6e} | "
-            f"C12={closest_C12:.6e} | "
-            f"SHIFT={closest_shift:.6e} | "
-            f"FLJ={lj_force_debug:.3e} | "
-            f"LJ_E={lj_energy_debug:.3e}"
-        )
-
     valid = r > 1e-12
 
     pair_i = pair_i[valid]
@@ -1480,6 +1468,7 @@ def non_bonded_forces(system):
     pair_C6 = pair_C6[valid]
     pair_C12 = pair_C12[valid]
     pair_shift = pair_shift[valid]
+    pair_force_shift = pair_force_shift[valid]
 
     qi = qi[valid]
     qj = qj[valid]
@@ -1505,6 +1494,7 @@ def non_bonded_forces(system):
 
         lj_scale_local = lj_scale[lj_mask]
         shift_local = pair_shift[lj_mask]
+        force_shift_local = pair_force_shift[lj_mask]
 
         C6_local = pair_C6[lj_mask]
         C12_local = pair_C12[lj_mask]
@@ -1523,27 +1513,12 @@ def non_bonded_forces(system):
             - 6.0 * C6_local * inv_r7
         )
 
+        # Shift force so that F(rc) = 0
+        force_mag -= force_shift_local
+
         force_mag *= lj_scale_local
 
         F_lj = -force_mag[:, None] * lj_hat
-
-        # ---------------------------------------------------------
-        # DEBUG: largest LJ pair force
-        # ---------------------------------------------------------
-        lj_force_abs = cp.abs(force_mag)
-
-        if cp.any(lj_force_abs > 0):
-            idx = int(cp.argmax(lj_force_abs))
-
-            max_lj_force = float(lj_force_abs[idx].get())
-
-            if max_lj_force > system.debug_max_lj_force:
-                system.debug_max_lj_force = max_lj_force
-                system.debug_max_lj_pair = (
-                    int(lj_i[idx]),
-                    int(lj_j[idx])
-                )
-                system.debug_max_lj_r = float(lj_r[idx].get())
 
         cp.add.at(system.forces, lj_i,  F_lj)
         cp.add.at(system.forces, lj_j, -F_lj)
@@ -1552,6 +1527,7 @@ def non_bonded_forces(system):
             C12_local * inv_r12
             - C6_local * inv_r6
             - shift_local
+            + force_shift_local * (lj_r - LJ_CUTOFF)
         )
 
         current_lj_PE = cp.sum(
@@ -1596,33 +1572,10 @@ def non_bonded_forces(system):
             )
         )
 
-        coulomb_strength = cp.abs(q1 * q2)
-
-        closest_coulomb = cp.argmin(
-            cp.where(coulomb_strength > 0, real_r, cp.inf)
-        )
-
         force_mag *= scale
 
         F_coul = -force_mag[:, None] * real_hat
 
-        # ---------------------------------------------------------
-        # DEBUG: largest real-space Coulomb pair force
-        # ---------------------------------------------------------
-        coul_force_abs = cp.abs(force_mag)
-
-        if cp.any(coul_force_abs > 0):
-            idx = int(cp.argmax(coul_force_abs))
-
-            max_coul_force = float(coul_force_abs[idx].get())
-
-            if max_coul_force > system.debug_max_coul_force:
-                system.debug_max_coul_force = max_coul_force
-                system.debug_max_coul_pair = (
-                    int(real_i[idx]),
-                    int(real_j[idx])
-                )
-                system.debug_max_coul_r = float(real_r[idx].get())
 
         cp.add.at(system.forces, real_i, F_coul)
         cp.add.at(system.forces, real_j, -F_coul)
@@ -2192,15 +2145,43 @@ while True:
     # 3. Now wrap molecules
     wrap_molecules(system)
 
-    # 4. Forces at q_(n+1)
+    # 4. Check whether the neighbour-list skin has been exceeded
+    positions_cpu = cp.asnumpy(system.positions)
+
+    for i, atom in enumerate(system.atoms):
+        disp = system.minimum_image_cpu(
+            positions_cpu[i] - atom.last_neighbour_reference
+        )
+
+        displacement2 = np.dot(disp, disp)
+
+        if displacement2 > max_displacement2:
+            max_displacement2 = displacement2
+
+    if max_displacement2 > (SKIN_CUTOFF / 2)**2:
+        print(
+            f"New List After "
+            f"{system.step - last_neighbour_build_step} Steps"
+        )
+
+        last_neighbour_build_step = system.step
+
+        build_neighbour_lists(
+            system,
+            NEIGHBOUR_CUTOFF
+        )
+
+        max_displacement2 = 0.0
+
+    # 5. Forces at q_(n+1)
     system.forces.fill(0.0)
 
     system.potential_energy = calc_physics()
 
-    # 5. Second physical half-step
+    # 6. Second physical half-step
     system.velocities += (0.5 * (system.forces / system.masses[:, None]) * TIME_STEP)
 
-    # 6. Relaxation damping
+    # 7. Relaxation damping
     if system.step < relax_steps / 5:
         damping = 0.99
     elif system.step < relax_steps / 2:
@@ -2212,7 +2193,7 @@ while True:
 
     system.velocities *= damping
 
-    # 7. Final RATTLE velocity constraint
+    # 8. Final RATTLE velocity constraint
     rattle_velocity_constraints(system)
 
     system.kinetic_energy = calc_KE(system)                                             # energy tracking
@@ -2222,30 +2203,10 @@ while True:
     debug_log_step(system)
     debug_log_closest_pairs(system)
 
-
     system.step += 1
 
     if system.step == relax_steps:
         system.average_total_energy = 0
-
-
-    # Get positions onto np CPU arrays
-    positions_cpu = cp.asnumpy(system.positions)
-
-    # find the displacement of the atom this timestep
-    for i, atom in enumerate(system.atoms):
-        disp2 = system.minimum_image_cpu(positions_cpu[i] - atom.last_neighbour_reference)
-
-        displacement2 = r2 = cp.dot(disp2,disp2)
-
-        if displacement2 > max_displacement2:
-            max_displacement2 = displacement2
-
-    if max_displacement2 > (SKIN_CUTOFF / 2)**2:
-        print(f"New List After "f"{system.step - last_neighbour_build_step} Steps")
-        last_neighbour_build_step = system.step
-        build_neighbour_lists(system, NEIGHBOUR_CUTOFF)
-        max_displacement2 = 0
         
 
     start_total_graphics = time.perf_counter() 
@@ -2301,7 +2262,7 @@ while True:
             system.average_total_energy = 0
 
             #print(f"KE: {system.kinetic_energy:.12f}  PE: {system.potential_energy:.12f}  Total: {system.total_energy:.12f}")
-        '''
+        
         print()
         print(f"Step: {system.step}")
         print(f"KE: {system.kinetic_energy:.6f}  PE: {system.potential_energy:.6f}  Total: {system.total_energy:.6f}")
@@ -2316,7 +2277,7 @@ while True:
         print(f"Time By % of non_bonded: {((time_taken_non_bonded/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of total forces: {((time_taken_all_foces/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
         print(f"Time By % of other: {((time_other/timestep_x)/time_taken_total)*100*timestep_x:.6f} %")
-        '''
+        
         time_taken_all_foces = 0
         time_taken_exclusions = 0
         time_taken_bonds = 0
